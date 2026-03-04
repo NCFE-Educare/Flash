@@ -1,0 +1,412 @@
+"""FastAPI app with signup, login, sessions, protected chat, and Gmail OAuth."""
+
+import asyncio
+import concurrent.futures
+import sys
+from typing import Annotated
+
+from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi.responses import HTMLResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, EmailStr
+
+from auth import create_access_token, decode_access_token, hash_password, verify_password
+from database import (
+    add_message,
+    create_session,
+    create_user,
+    delete_gmail_tokens,
+    delete_session,
+    get_gmail_tokens,
+    get_messages,
+    get_session,
+    get_sessions_for_user,
+    get_user_by_email,
+    init_db,
+    rename_session,
+)
+
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="EduCare Bots API", version="1.0.0")
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+
+
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    username: str
+    password: str
+
+
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+
+
+class SessionCreateRequest(BaseModel):
+    title: str = "New Chat"
+
+
+class SessionRenameRequest(BaseModel):
+    title: str
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: int | None = None   # omit to auto-create a new session
+
+
+class ChatResponse(BaseModel):
+    reply: str
+    user: str
+    session_id: int
+
+
+# ---------------------------------------------------------------------------
+# Auth dependency
+# ---------------------------------------------------------------------------
+
+bearer_scheme = HTTPBearer()
+
+
+def get_current_user(
+    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+) -> dict:
+    payload = decode_access_token(credentials.credentials)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/auth/signup", response_model=TokenResponse, status_code=201)
+def signup(body: SignupRequest):
+    """Register a new user and return a JWT."""
+    if len(body.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    hashed = hash_password(body.password)
+    user = create_user(email=body.email, username=body.username, hashed_password=hashed)
+
+    if user is None:
+        raise HTTPException(status_code=409, detail="Email or username already registered")
+
+    token = create_access_token({"sub": str(user["id"]), "username": user["username"]})
+    return TokenResponse(access_token=token)
+
+
+@app.post("/auth/login", response_model=TokenResponse)
+def login(body: LoginRequest):
+    """Authenticate with email + password and return a JWT."""
+    user = get_user_by_email(body.email)
+
+    if user is None or not verify_password(body.password, user["hashed_password"]):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect email or password",
+        )
+
+    token = create_access_token({"sub": str(user["id"]), "username": user["username"]})
+    return TokenResponse(access_token=token)
+
+
+@app.get("/auth/me")
+def me(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Return the currently authenticated user's info."""
+    return {"user_id": current_user["sub"], "username": current_user["username"]}
+
+
+# ---------------------------------------------------------------------------
+# Gmail OAuth endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/gmail/connect")
+def gmail_connect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """
+    Generate the Google OAuth URL for the logged-in user.
+    The frontend should open this URL in a browser/popup so the user can
+    grant Gmail access. After approval Google redirects to /auth/gmail/callback.
+    """
+    from gmail_tools import get_gmail_auth_url
+    user_id = int(current_user["sub"])
+    try:
+        auth_url = get_gmail_auth_url(user_id)
+        return {"auth_url": auth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/gmail/callback", response_class=HTMLResponse)
+def gmail_callback(code: str, state: str):
+    """
+    Google redirects the user's browser here after they approve (or deny) access.
+    We exchange the code for tokens, save them, and show a success page.
+    This endpoint does NOT require a JWT — it is called by Google's redirect.
+    """
+    from gmail_tools import exchange_gmail_code
+    result = exchange_gmail_code(code, state)
+    if result:
+        return HTMLResponse(content=f"""
+        <html>
+        <head><title>Gmail Connected</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">✅</div>
+                <h2 style="color:#1a1a1a;">Gmail Connected!</h2>
+                <p style="color:#555;">Connected account:<br><strong>{result['email']}</strong></p>
+                <p style="color:#888;font-size:14px;">You can close this tab and return to the chatbot.</p>
+            </div>
+        </body>
+        </html>
+        """)
+
+    return HTMLResponse(
+        status_code=400,
+        content="""
+        <html>
+        <head><title>Connection Failed</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">❌</div>
+                <h2 style="color:#1a1a1a;">Connection Failed</h2>
+                <p style="color:#555;">Could not connect your Gmail account. Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """,
+    )
+
+
+@app.get("/auth/gmail/status")
+def gmail_status(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Check whether the logged-in user has connected their Gmail account."""
+    user_id = int(current_user["sub"])
+    tokens = get_gmail_tokens(user_id)
+    return {
+        "connected": tokens is not None,
+        "gmail_email": tokens["gmail_email"] if tokens else None,
+        "connected_at": tokens["connected_at"] if tokens else None,
+    }
+
+
+@app.delete("/auth/gmail/disconnect", status_code=204)
+def gmail_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Remove the stored Gmail tokens, disconnecting Gmail for this user."""
+    user_id = int(current_user["sub"])
+    delete_gmail_tokens(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Session endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/sessions", status_code=201)
+def new_session(
+    body: SessionCreateRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Create a new chat session for the logged-in user."""
+    user_id = int(current_user["sub"])
+    session = create_session(user_id=user_id, title=body.title)
+    return session
+
+
+@app.get("/sessions")
+def list_sessions(current_user: Annotated[dict, Depends(get_current_user)]):
+    """List all sessions for the logged-in user (newest first)."""
+    user_id = int(current_user["sub"])
+    return get_sessions_for_user(user_id)
+
+
+@app.get("/sessions/{session_id}")
+def get_session_detail(
+    session_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Get a session and all its messages."""
+    user_id = int(current_user["sub"])
+    session = get_session(session_id, user_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    messages = get_messages(session_id)
+    return {**session, "messages": messages}
+
+
+@app.patch("/sessions/{session_id}")
+def rename_session_endpoint(
+    session_id: int,
+    body: SessionRenameRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Rename a session title."""
+    user_id = int(current_user["sub"])
+    session = rename_session(session_id, user_id, body.title)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+@app.delete("/sessions/{session_id}", status_code=204)
+def delete_session_endpoint(
+    session_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Delete a session and all its messages."""
+    user_id = int(current_user["sub"])
+    if not delete_session(session_id, user_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ---------------------------------------------------------------------------
+# Chat endpoint (protected + session-aware)
+# ---------------------------------------------------------------------------
+
+@app.post("/chat", response_model=ChatResponse)
+async def chat(
+    body: ChatRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """
+    Send a message to the EduCare agent.
+    - Pass `session_id` to continue an existing session.
+    - Omit `session_id` (or pass null) to auto-create a new session.
+    Both the user message and the agent reply are saved to the session.
+    """
+    user_id = int(current_user["sub"])
+
+    # Resolve or create the session
+    if body.session_id is not None:
+        session = get_session(body.session_id, user_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+        session_id = session["id"]
+    else:
+        # Auto-create a session titled with the first 60 chars of the message
+        title = body.message[:60] + ("…" if len(body.message) > 60 else "")
+        session_id = create_session(user_id=user_id, title=title)["id"]
+
+    # Save the user message
+    add_message(session_id, role="user", content=body.message)
+
+    # Run the agent (in a thread with ProactorEventLoop on Windows)
+    # Pass user_id so Gmail tools know whose tokens to use
+    loop = asyncio.get_event_loop()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        reply = await loop.run_in_executor(
+            pool, _run_agent_in_thread, body.message, user_id
+        )
+
+    # Save the assistant reply
+    add_message(session_id, role="assistant", content=reply)
+
+    return ChatResponse(reply=reply, user=current_user["username"], session_id=session_id)
+
+
+# ---------------------------------------------------------------------------
+# Agent runner (Windows ProactorEventLoop workaround)
+# ---------------------------------------------------------------------------
+
+def _run_agent_in_thread(user_message: str, user_id: int) -> str:
+    """
+    Runs in a worker thread. Creates a fresh ProactorEventLoop (Windows-safe)
+    and drives the async agent to completion.
+    """
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_run_agent(user_message, user_id))
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+async def _run_agent(user_message: str, user_id: int) -> str:
+    """Async agent runner — must be called inside a ProactorEventLoop on Windows."""
+    import os
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        TextBlock,
+    )
+    from gmail_tools import gmail_tools_server
+    from sub_agent import data_processor_agent, email_drafter_agent
+    from tools import my_tools_server
+
+    agent_cwd = Path(__file__).parent / "cwd"
+    agent_cwd.mkdir(exist_ok=True)
+
+    def _build_cli_env() -> dict[str, str]:
+        env: dict[str, str] = {}
+        if os.environ.get("USE_BEDROCK", "").strip() == "1":
+            env["CLAUDE_CODE_USE_BEDROCK"] = "1"
+            env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
+        return env
+
+    options = ClaudeAgentOptions(
+        mcp_servers={
+            "my_tools": my_tools_server,
+            "gmail_tools": gmail_tools_server,
+        },
+        agents={
+            "data_processor": data_processor_agent,
+            "email_drafter": email_drafter_agent,
+        },
+        tools=["Skill", "Task", "Bash", "Read", "Write"],
+        allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
+        setting_sources=["project"],
+        system_prompt=(
+            f"You are working in a restricted directory. Always use RELATIVE paths. "
+            f"Your working directory is: {agent_cwd}. "
+            f"The current user's ID is: {user_id}. "
+            f"IMPORTANT: When calling ANY Gmail tool (list_emails, get_email, search_emails, "
+            f"send_email, create_draft, reply_to_email, mark_as_read, move_to_trash, "
+            f"archive_email, add_label, list_labels, get_gmail_profile), you MUST always "
+            f"pass user_id={user_id}. Never use a different user_id. "
+            "When asked to read/process mock data or draft emails, use the Task tool to delegate."
+        ),
+        permission_mode="bypassPermissions",
+        cwd=str(agent_cwd),
+        env=_build_cli_env(),
+    )
+
+    text_chunks: list[str] = []
+
+    async with ClaudeSDKClient(options=options) as client:
+        await client.query(user_message)
+        async for message in client.receive_response():
+            if isinstance(message, AssistantMessage):
+                for block in message.content:
+                    if isinstance(block, TextBlock):
+                        text_chunks.append(block.text)
+
+    return "\n".join(text_chunks) if text_chunks else "(no response)"
