@@ -102,7 +102,7 @@ def get_current_user(
 # Auth endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/auth/signup", response_model=TokenResponse, status_code=201)
+@app.post("/auth/signup", response_model=TokenResponse, status_code=201, tags=["Auth"])
 def signup(body: SignupRequest):
     """Register a new user and return a JWT."""
     if len(body.password) < 6:
@@ -118,7 +118,7 @@ def signup(body: SignupRequest):
     return TokenResponse(access_token=token)
 
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/auth/login", response_model=TokenResponse, tags=["Auth"])
 def login(body: LoginRequest):
     """Authenticate with email + password and return a JWT."""
     user = get_user_by_email(body.email)
@@ -133,7 +133,7 @@ def login(body: LoginRequest):
     return TokenResponse(access_token=token)
 
 
-@app.get("/auth/me")
+@app.get("/auth/me", tags=["Auth"])
 def me(current_user: Annotated[dict, Depends(get_current_user)]):
     """Return the currently authenticated user's info."""
     return {"user_id": current_user["sub"], "username": current_user["username"]}
@@ -143,7 +143,7 @@ def me(current_user: Annotated[dict, Depends(get_current_user)]):
 # Gmail OAuth endpoints
 # ---------------------------------------------------------------------------
 
-@app.get("/auth/gmail/connect")
+@app.get("/auth/gmail/connect", tags=["Gmail"])
 def gmail_connect(current_user: Annotated[dict, Depends(get_current_user)]):
     """
     Generate the Google OAuth URL for the logged-in user.
@@ -159,7 +159,7 @@ def gmail_connect(current_user: Annotated[dict, Depends(get_current_user)]):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/auth/gmail/callback", response_class=HTMLResponse)
+@app.get("/auth/gmail/callback", response_class=HTMLResponse, tags=["Gmail"])
 def gmail_callback(code: str, state: str):
     """
     Google redirects the user's browser here after they approve (or deny) access.
@@ -200,7 +200,7 @@ def gmail_callback(code: str, state: str):
     )
 
 
-@app.get("/auth/gmail/status")
+@app.get("/auth/gmail/status", tags=["Gmail"])
 def gmail_status(current_user: Annotated[dict, Depends(get_current_user)]):
     """Check whether the logged-in user has connected their Gmail account."""
     user_id = int(current_user["sub"])
@@ -212,7 +212,7 @@ def gmail_status(current_user: Annotated[dict, Depends(get_current_user)]):
     }
 
 
-@app.delete("/auth/gmail/disconnect", status_code=204)
+@app.delete("/auth/gmail/disconnect", status_code=204, tags=["Gmail"])
 def gmail_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
     """Remove the stored Gmail tokens, disconnecting Gmail for this user."""
     user_id = int(current_user["sub"])
@@ -223,7 +223,7 @@ def gmail_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
 # Session endpoints
 # ---------------------------------------------------------------------------
 
-@app.post("/sessions", status_code=201)
+@app.post("/sessions", status_code=201, tags=["Sessions"])
 def new_session(
     body: SessionCreateRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -234,14 +234,14 @@ def new_session(
     return session
 
 
-@app.get("/sessions")
+@app.get("/sessions", tags=["Sessions"])
 def list_sessions(current_user: Annotated[dict, Depends(get_current_user)]):
     """List all sessions for the logged-in user (newest first)."""
     user_id = int(current_user["sub"])
     return get_sessions_for_user(user_id)
 
 
-@app.get("/sessions/{session_id}")
+@app.get("/sessions/{session_id}", tags=["Sessions"])
 def get_session_detail(
     session_id: int,
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -255,7 +255,7 @@ def get_session_detail(
     return {**session, "messages": messages}
 
 
-@app.patch("/sessions/{session_id}")
+@app.patch("/sessions/{session_id}", tags=["Sessions"])
 def rename_session_endpoint(
     session_id: int,
     body: SessionRenameRequest,
@@ -269,7 +269,7 @@ def rename_session_endpoint(
     return session
 
 
-@app.delete("/sessions/{session_id}", status_code=204)
+@app.delete("/sessions/{session_id}", status_code=204, tags=["Sessions"])
 def delete_session_endpoint(
     session_id: int,
     current_user: Annotated[dict, Depends(get_current_user)],
@@ -284,7 +284,7 @@ def delete_session_endpoint(
 # Chat endpoint (protected + session-aware)
 # ---------------------------------------------------------------------------
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat", response_model=ChatResponse, tags=["Chat"])
 async def chat(
     body: ChatRequest,
     current_user: Annotated[dict, Depends(get_current_user)],
