@@ -25,7 +25,7 @@ from claude_agent_sdk import (
 # Import our modularized components
 from tools import my_tools_server
 from gmail_tools import gmail_tools_server
-from sub_agent import data_processor_agent, email_drafter_agent
+from sub_agent import data_processor_agent, email_drafter_agent, gmail_agent
 
 
 def _build_cli_env() -> dict[str, str]:
@@ -54,6 +54,7 @@ async def main():
         agents={
             "data_processor": data_processor_agent,
             "email_drafter": email_drafter_agent,
+            "gmail_agent": gmail_agent,
         },
         
         # 3. Restrict main agent tools - NO read_mock_data/draft_email so it MUST delegate to subagents
@@ -63,12 +64,15 @@ async def main():
         # 4. Tell the SDK to look for the .claude/skills/ folder in the project
         setting_sources=["project"],
         
-        # 4b. Force agent to use relative paths + delegate mock data/emails to subagents
+        # 4b. Force agent to use relative paths + delegate all tasks to subagents
         system_prompt=(
             f"You are working in a restricted directory. Always use RELATIVE paths (e.g. 'test.txt', './report.txt') - never absolute paths like /home/user/ or C:/. Your working directory is: {_agent_cwd}. "
-            "IMPORTANT: When the user asks to read/process mock data (e.g. report.txt) or draft emails, you MUST use the Task tool to delegate to the data_processor or email_drafter subagent. Do not handle these tasks yourself. "
-            "For Gmail operations (reading emails, sending emails, searching, etc.) use the gmail_tools MCP server tools directly. "
-            "NOTE: In this CLI mode there is no logged-in user_id — ask the user to provide their user_id or use the API endpoint instead."
+            "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
+            "- Mock data / file processing → delegate to 'data_processor' subagent\n"
+            "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
+            "- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → delegate to 'gmail_agent' subagent. "
+            "Always include the user_id in the task prompt when delegating to gmail_agent.\n"
+            "NOTE: In this CLI mode there is no logged-in user_id — ask the user to provide their user_id before delegating Gmail tasks."
         ),
         
         # 5. Auto-approve tools so subagent can run MCP tools without interactive permission prompt

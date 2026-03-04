@@ -24,6 +24,7 @@ from database import (
     get_user_by_email,
     init_db,
     rename_session,
+    save_claude_session_id,
 )
 
 # ---------------------------------------------------------------------------
@@ -296,30 +297,38 @@ async def chat(
     """
     user_id = int(current_user["sub"])
 
-    # Resolve or create the session
+    # Resolve or create the session — always keep the full session dict
+    # so we can read the stored claude_session_id for conversation resumption
     if body.session_id is not None:
         session = get_session(body.session_id, user_id)
         if session is None:
             raise HTTPException(status_code=404, detail="Session not found")
-        session_id = session["id"]
     else:
-        # Auto-create a session titled with the first 60 chars of the message
         title = body.message[:60] + ("…" if len(body.message) > 60 else "")
-        session_id = create_session(user_id=user_id, title=title)["id"]
+        session = create_session(user_id=user_id, title=title)
 
-    # Save the user message
+    session_id = session["id"]
+
+    # The Claude SDK session ID lets the SDK resume the exact conversation
+    # transcript on its end — full unlimited memory, no manual history needed
+    claude_session_id: str | None = session.get("claude_session_id")
+
+    # Save the current user message
     add_message(session_id, role="user", content=body.message)
 
-    # Run the agent (in a thread with ProactorEventLoop on Windows)
-    # Pass user_id so Gmail tools know whose tokens to use
+    # Run the agent — pass claude_session_id so the SDK can resume the session
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        reply = await loop.run_in_executor(
-            pool, _run_agent_in_thread, body.message, user_id
+        reply, new_claude_session_id = await loop.run_in_executor(
+            pool, _run_agent_in_thread, body.message, user_id, claude_session_id
         )
 
     # Save the assistant reply
     add_message(session_id, role="assistant", content=reply)
+
+    # Persist the SDK session ID so the next message in this session can resume
+    if new_claude_session_id:
+        save_claude_session_id(session_id, new_claude_session_id)
 
     return ChatResponse(reply=reply, user=current_user["username"], session_id=session_id)
 
@@ -328,10 +337,13 @@ async def chat(
 # Agent runner (Windows ProactorEventLoop workaround)
 # ---------------------------------------------------------------------------
 
-def _run_agent_in_thread(user_message: str, user_id: int) -> str:
+def _run_agent_in_thread(
+    user_message: str, user_id: int, claude_session_id: str | None
+) -> tuple[str, str | None]:
     """
     Runs in a worker thread. Creates a fresh ProactorEventLoop (Windows-safe)
     and drives the async agent to completion.
+    Returns (reply_text, new_claude_session_id).
     """
     if sys.platform == "win32":
         loop = asyncio.ProactorEventLoop()
@@ -339,14 +351,23 @@ def _run_agent_in_thread(user_message: str, user_id: int) -> str:
         loop = asyncio.new_event_loop()
     try:
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(_run_agent(user_message, user_id))
+        return loop.run_until_complete(
+            _run_agent(user_message, user_id, claude_session_id)
+        )
     finally:
         loop.close()
         asyncio.set_event_loop(None)
 
 
-async def _run_agent(user_message: str, user_id: int) -> str:
-    """Async agent runner — must be called inside a ProactorEventLoop on Windows."""
+async def _run_agent(
+    user_message: str, user_id: int, claude_session_id: str | None
+) -> tuple[str, str | None]:
+    """
+    Async agent runner — must be called inside a ProactorEventLoop on Windows.
+    Uses the Claude SDK's native session resumption (resume=claude_session_id)
+    so Claude remembers the full conversation with no cap or summarization.
+    Returns (reply_text, new_claude_session_id).
+    """
     import os
     from pathlib import Path
 
@@ -356,10 +377,11 @@ async def _run_agent(user_message: str, user_id: int) -> str:
         AssistantMessage,
         ClaudeAgentOptions,
         ClaudeSDKClient,
+        ResultMessage,
         TextBlock,
     )
     from gmail_tools import gmail_tools_server
-    from sub_agent import data_processor_agent, email_drafter_agent
+    from sub_agent import data_processor_agent, email_drafter_agent, gmail_agent
     from tools import my_tools_server
 
     agent_cwd = Path(__file__).parent / "cwd"
@@ -380,6 +402,7 @@ async def _run_agent(user_message: str, user_id: int) -> str:
         agents={
             "data_processor": data_processor_agent,
             "email_drafter": email_drafter_agent,
+            "gmail_agent": gmail_agent,
         },
         tools=["Skill", "Task", "Bash", "Read", "Write"],
         allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
@@ -388,18 +411,22 @@ async def _run_agent(user_message: str, user_id: int) -> str:
             f"You are working in a restricted directory. Always use RELATIVE paths. "
             f"Your working directory is: {agent_cwd}. "
             f"The current user's ID is: {user_id}. "
-            f"IMPORTANT: When calling ANY Gmail tool (list_emails, get_email, search_emails, "
-            f"send_email, create_draft, reply_to_email, mark_as_read, move_to_trash, "
-            f"archive_email, add_label, list_labels, get_gmail_profile), you MUST always "
-            f"pass user_id={user_id}. Never use a different user_id. "
-            "When asked to read/process mock data or draft emails, use the Task tool to delegate."
+            "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
+            "- Mock data / file processing → delegate to 'data_processor' subagent\n"
+            "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
+            f"- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → "
+            f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
         ),
         permission_mode="bypassPermissions",
         cwd=str(agent_cwd),
         env=_build_cli_env(),
+        # Resume the existing SDK session so Claude has full unlimited memory.
+        # On the very first message this is None (fresh session).
+        resume=claude_session_id,
     )
 
     text_chunks: list[str] = []
+    new_claude_session_id: str | None = None
 
     async with ClaudeSDKClient(options=options) as client:
         await client.query(user_message)
@@ -408,5 +435,9 @@ async def _run_agent(user_message: str, user_id: int) -> str:
                 for block in message.content:
                     if isinstance(block, TextBlock):
                         text_chunks.append(block.text)
+            elif isinstance(message, ResultMessage):
+                # Capture the SDK session ID to persist for the next turn
+                new_claude_session_id = message.session_id
 
-    return "\n".join(text_chunks) if text_chunks else "(no response)"
+    reply = "\n".join(text_chunks) if text_chunks else "(no response)"
+    return reply, new_claude_session_id

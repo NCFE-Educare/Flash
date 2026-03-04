@@ -14,6 +14,13 @@ DB_PATH = Path(__file__).parent / "educare.db"
 def init_db() -> None:
     """Create all tables if they don't exist."""
     with _get_conn() as conn:
+        # Migrate existing databases that predate the claude_session_id column
+        try:
+            conn.execute("ALTER TABLE sessions ADD COLUMN claude_session_id TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists — nothing to do
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -24,11 +31,12 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS sessions (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                title       TEXT NOT NULL DEFAULT 'New Chat',
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                title             TEXT NOT NULL DEFAULT 'New Chat',
+                claude_session_id TEXT,
+                created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS messages (
@@ -160,6 +168,16 @@ def delete_session(session_id: int, user_id: int) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+def save_claude_session_id(session_id: int, claude_session_id: str) -> None:
+    """Persist the Claude SDK session ID so the next request can resume it."""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE sessions SET claude_session_id = ? WHERE id = ?",
+            (claude_session_id, session_id),
+        )
+        conn.commit()
 
 
 def _touch_session(conn, session_id: int) -> None:
