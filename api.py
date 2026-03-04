@@ -17,10 +17,12 @@ from database import (
     create_user,
     delete_gmail_tokens,
     delete_session,
+    delete_sheets_tokens,
     get_gmail_tokens,
     get_messages,
     get_session,
     get_sessions_for_user,
+    get_sheets_tokens,
     get_user_by_email,
     init_db,
     rename_session,
@@ -220,6 +222,86 @@ def gmail_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
 
 
 # ---------------------------------------------------------------------------
+# Google Sheets OAuth endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/sheets/connect", tags=["Sheets"])
+def sheets_connect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """
+    Generate the Google OAuth URL for Sheets + Drive access.
+    The frontend should open this URL in a browser/popup so the user can
+    grant access. After approval Google redirects to /auth/sheets/callback.
+    """
+    from sheets_tools import get_sheets_auth_url
+    user_id = int(current_user["sub"])
+    try:
+        auth_url = get_sheets_auth_url(user_id)
+        return {"auth_url": auth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/sheets/callback", response_class=HTMLResponse, tags=["Sheets"])
+def sheets_callback(code: str, state: str):
+    """
+    Google redirects here after the user approves Sheets access.
+    Exchanges the code for tokens, saves them, and shows a success page.
+    This endpoint does NOT require a JWT — it is called by Google's redirect.
+    """
+    from sheets_tools import exchange_sheets_code
+    result = exchange_sheets_code(code, state)
+    if result:
+        return HTMLResponse(content=f"""
+        <html>
+        <head><title>Google Sheets Connected</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">✅</div>
+                <h2 style="color:#1a1a1a;">Google Sheets Connected!</h2>
+                <p style="color:#555;">Connected account:<br><strong>{result['email']}</strong></p>
+                <p style="color:#888;font-size:14px;">You can close this tab and return to the chatbot.</p>
+            </div>
+        </body>
+        </html>
+        """)
+
+    return HTMLResponse(
+        status_code=400,
+        content="""
+        <html>
+        <head><title>Connection Failed</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">❌</div>
+                <h2 style="color:#1a1a1a;">Connection Failed</h2>
+                <p style="color:#555;">Could not connect your Google Sheets account. Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """,
+    )
+
+
+@app.get("/auth/sheets/status", tags=["Sheets"])
+def sheets_status(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Check whether the logged-in user has connected their Google Sheets account."""
+    user_id = int(current_user["sub"])
+    tokens = get_sheets_tokens(user_id)
+    return {
+        "connected": tokens is not None,
+        "google_email": tokens["google_email"] if tokens else None,
+        "connected_at": tokens["connected_at"] if tokens else None,
+    }
+
+
+@app.delete("/auth/sheets/disconnect", status_code=204, tags=["Sheets"])
+def sheets_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Remove the stored Sheets tokens, disconnecting Google Sheets for this user."""
+    user_id = int(current_user["sub"])
+    delete_sheets_tokens(user_id)
+
+
+# ---------------------------------------------------------------------------
 # Session endpoints
 # ---------------------------------------------------------------------------
 
@@ -337,6 +419,48 @@ async def chat(
 
 
 # ---------------------------------------------------------------------------
+# Markdown stripper — converts agent markdown output to clean plain text
+# ---------------------------------------------------------------------------
+
+def _strip_markdown(text: str) -> str:
+    """
+    Convert markdown-formatted text to clean plain text for chat display.
+    Removes bold/italic markers, headers, and normalises bullet lists.
+    """
+    import re
+
+    # Decode literal escape sequences like \\n that some models emit
+    text = text.replace("\\n", "\n").replace("\\t", "\t")
+
+    # Remove markdown headers (# Heading, ## Heading, etc.)
+    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
+
+    # Remove bold/italic markers (**text**, *text*, __text__, _text_)
+    text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
+    text = re.sub(r"_{1,3}(.*?)_{1,3}", r"\1", text)
+
+    # Remove inline code backticks but keep the content
+    text = re.sub(r"`{1,3}(.*?)`{1,3}", r"\1", text, flags=re.DOTALL)
+
+    # Convert markdown links [label](url) → label (url)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
+
+    # Convert markdown bullet lists (- item or * item) to plain lines
+    text = re.sub(r"^[\-\*]\s+", "• ", text, flags=re.MULTILINE)
+
+    # Convert numbered lists (1. item) — keep number but clean up
+    text = re.sub(r"^\d+\.\s+", lambda m: m.group(0), text, flags=re.MULTILINE)
+
+    # Remove horizontal rules (--- or ***)
+    text = re.sub(r"^[\-\*_]{3,}\s*$", "", text, flags=re.MULTILINE)
+
+    # Collapse more than 2 consecutive blank lines into 2
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+
+# ---------------------------------------------------------------------------
 # Agent runner (Windows ProactorEventLoop workaround)
 # ---------------------------------------------------------------------------
 
@@ -421,7 +545,13 @@ async def _run_agent(
         TextBlock,
     )
     from gmail_tools import gmail_tools_server
-    from sub_agent import data_processor_agent, email_drafter_agent, gmail_agent
+    from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
+    from sub_agent import (
+        data_processor_agent,
+        email_drafter_agent,
+        gmail_agent,
+        sheets_agent,
+    )
     from tools import my_tools_server
 
     agent_cwd = Path(__file__).parent / "cwd"
@@ -439,11 +569,15 @@ async def _run_agent(
             mcp_servers={
                 "my_tools": my_tools_server,
                 "gmail_tools": gmail_tools_server,
+                "sheets_data": sheets_data_server,
+                "sheets_format": sheets_format_server,
+                "sheets_visual": sheets_visual_server,
             },
             agents={
                 "data_processor": data_processor_agent,
                 "email_drafter": email_drafter_agent,
                 "gmail_agent": gmail_agent,
+                "sheets_agent": sheets_agent,
             },
             tools=["Skill", "Task", "Bash", "Read", "Write"],
             allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
@@ -452,11 +586,25 @@ async def _run_agent(
                 f"You are working in a restricted directory. Always use RELATIVE paths. "
                 f"Your working directory is: {agent_cwd}. "
                 f"The current user's ID is: {user_id}. "
-                "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
+
+                "\n\n=== RESPONSE FORMATTING RULES (follow strictly) ===\n"
+                "- Write in clean, plain conversational English. NO markdown symbols.\n"
+                "- Do NOT use **bold**, *italic*, __underline__, or any asterisks/underscores for emphasis.\n"
+                "- Do NOT use markdown headers like # or ##.\n"
+                "- Do NOT use markdown bullet lists with - or * or numbered lists with 1. 2. 3.\n"
+                "- Instead of bullet lists, write naturally in short sentences or use a simple newline between items.\n"
+                "- Use ONLY plain text — as if you are writing a friendly chat message.\n"
+                "- Emojis like ✅ or 📋 are fine to use for visual clarity.\n"
+                "- Keep responses concise and friendly. Avoid walls of text.\n"
+
+                "\n=== DELEGATION RULES (always use Task tool, never handle yourself) ===\n"
                 "- Mock data / file processing → delegate to 'data_processor' subagent\n"
                 "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
                 f"- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → "
-                f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
+                f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt.\n"
+                f"- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
+                f"conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
+                f"delegate to 'sheets_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
             ),
             permission_mode="bypassPermissions",
             cwd=str(agent_cwd),
@@ -476,7 +624,8 @@ async def _run_agent(
                             text_chunks.append(block.text)
                 elif isinstance(message, ResultMessage):
                     new_sid = message.session_id
-        reply = "\n".join(text_chunks) if text_chunks else "(no response)"
+        raw = "\n".join(text_chunks) if text_chunks else "(no response)"
+        reply = _strip_markdown(raw)
         return reply, new_sid
 
     # ── PRIMARY: native SDK session resumption ──────────────────────────────

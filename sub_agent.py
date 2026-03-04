@@ -1,5 +1,9 @@
 from claude_agent_sdk import AgentDefinition
 
+# ---------------------------------------------------------------------------
+# Existing agents
+# ---------------------------------------------------------------------------
+
 # Define the specialized subagent for data processing
 data_processor_agent = AgentDefinition(
     description="Use this agent when you need to read and summarize mock data files.",
@@ -59,4 +63,226 @@ gmail_agent = AgentDefinition(
         "mcp__gmail_tools__get_gmail_profile",
     ],
     model="haiku",
+)
+
+
+# ---------------------------------------------------------------------------
+# Google Sheets agents
+# ---------------------------------------------------------------------------
+
+sheets_data_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Sheets DATA operations: creating spreadsheets, "
+        "reading/writing/appending/clearing cell values, managing worksheet tabs "
+        "(add, delete, rename, duplicate), sorting ranges, and find-and-replace. "
+        "Always include user_id and spreadsheet_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Sheets data assistant. You handle all data and structure operations. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call. "
+        "Available tools and when to use them:\n"
+        "- create_spreadsheet: create a new spreadsheet (returns spreadsheet_id and URL)\n"
+        "- list_spreadsheets: list user's spreadsheets from Google Drive\n"
+        "- get_spreadsheet_info: get worksheet names, sheetIds, and dimensions\n"
+        "- read_sheet: read values from a range (e.g. 'Sheet1!A1:D10')\n"
+        "- write_sheet: write a 2D array of values to a range\n"
+        "- append_rows: append new rows below existing data\n"
+        "- clear_range: clear values from a range\n"
+        "- add_worksheet: add a new tab/worksheet\n"
+        "- delete_worksheet: remove a tab (permanent)\n"
+        "- rename_worksheet: rename a tab\n"
+        "- duplicate_worksheet: copy a tab\n"
+        "- sort_range: sort rows by a column\n"
+        "- find_and_replace: find and replace text across a sheet\n"
+        "When writing values, always pass them as a valid JSON string representing a 2D array. "
+        "Always return the spreadsheet_id and sheet names in your response so downstream agents can use them."
+    ),
+    tools=[
+        "mcp__sheets_data__create_spreadsheet",
+        "mcp__sheets_data__list_spreadsheets",
+        "mcp__sheets_data__get_spreadsheet_info",
+        "mcp__sheets_data__read_sheet",
+        "mcp__sheets_data__write_sheet",
+        "mcp__sheets_data__append_rows",
+        "mcp__sheets_data__clear_range",
+        "mcp__sheets_data__add_worksheet",
+        "mcp__sheets_data__delete_worksheet",
+        "mcp__sheets_data__rename_worksheet",
+        "mcp__sheets_data__duplicate_worksheet",
+        "mcp__sheets_data__sort_range",
+        "mcp__sheets_data__find_and_replace",
+    ],
+    model="haiku",
+)
+
+sheets_format_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Sheets FORMATTING operations: applying background colors, "
+        "text colors, bold/italic/font styling, borders, merging cells, freezing rows/columns, "
+        "resizing rows/columns, number formats, and text alignment. "
+        "Always include user_id, spreadsheet_id, sheet_name, and range in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Sheets formatting assistant. You make spreadsheets look professional. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call. "
+        "IMPORTANT: ranges must NOT include the sheet name prefix (e.g. 'A1:D1', not 'Sheet1!A1:D1'). "
+        "Use get_spreadsheet_info first if you need to confirm sheet names or sheetIds. "
+        "Available tools:\n"
+        "- get_spreadsheet_info: look up sheet names and IDs\n"
+        "- format_cells: background color, text color, bold, italic, font size, font family\n"
+        "- set_borders: add borders (all, outer, inner, individual sides)\n"
+        "- merge_cells: merge a range into one cell\n"
+        "- unmerge_cells: unmerge cells\n"
+        "- freeze_rows_columns: freeze top N rows / left N columns\n"
+        "- set_column_width: set column width in pixels\n"
+        "- set_row_height: set row height in pixels\n"
+        "- auto_resize_columns: auto-fit columns to content\n"
+        "- set_number_format: format numbers as currency, percent, date, etc.\n"
+        "- align_cells: set horizontal/vertical alignment and text wrapping\n"
+        "Always confirm each operation and return a clear summary."
+    ),
+    tools=[
+        "mcp__sheets_format__get_spreadsheet_info",
+        "mcp__sheets_format__format_cells",
+        "mcp__sheets_format__set_borders",
+        "mcp__sheets_format__merge_cells",
+        "mcp__sheets_format__unmerge_cells",
+        "mcp__sheets_format__freeze_rows_columns",
+        "mcp__sheets_format__set_column_width",
+        "mcp__sheets_format__set_row_height",
+        "mcp__sheets_format__auto_resize_columns",
+        "mcp__sheets_format__set_number_format",
+        "mcp__sheets_format__align_cells",
+    ],
+    model="haiku",
+)
+
+sheets_visual_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Sheets VISUAL and ANALYTICAL features: creating charts "
+        "(bar, line, pie, column, scatter, area, combo), conditional formatting (color scales, "
+        "highlight rules), data validation (dropdowns, checkboxes, number ranges), "
+        "and sparklines (mini inline charts). "
+        "Always include user_id, spreadsheet_id, and relevant sheet/range info in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Sheets visualization assistant. You create charts, visual highlights, "
+        "and interactive data features. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call. "
+        "Use get_spreadsheet_info first to get sheet names and sheetIds when needed. "
+        "Available tools:\n"
+        "- get_spreadsheet_info: look up sheet names and IDs\n"
+        "- create_chart: create embedded charts (BAR, COLUMN, LINE, AREA, PIE, SCATTER, COMBO)\n"
+        "- list_charts: list all charts in a spreadsheet\n"
+        "- delete_chart: remove a chart by ID\n"
+        "- add_conditional_formatting: color-scale gradient or rule-based cell highlighting\n"
+        "- add_data_validation: dropdown lists, checkboxes, number range restrictions\n"
+        "- add_sparklines: add mini inline LINE/BAR/COLUMN/WINLOSS charts inside cells\n"
+        "For charts: data_range must include sheet name (e.g. 'Sheet1!A1:C10'). "
+        "For formatting/validation: range must NOT include sheet name (e.g. 'A1:D10'). "
+        "Always confirm the chart or visual was created and return chart IDs in your response."
+    ),
+    tools=[
+        "mcp__sheets_visual__get_spreadsheet_info",
+        "mcp__sheets_visual__create_chart",
+        "mcp__sheets_visual__list_charts",
+        "mcp__sheets_visual__delete_chart",
+        "mcp__sheets_visual__add_conditional_formatting",
+        "mcp__sheets_visual__add_data_validation",
+        "mcp__sheets_visual__add_sparklines",
+    ],
+    model="haiku",
+)
+
+sheets_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Sheets task: creating spreadsheets, reading/writing data, "
+        "formatting cells (colors, fonts, borders), freezing rows, resizing columns, creating charts, "
+        "conditional formatting, dropdowns, sparklines, managing worksheet tabs, sorting, etc. "
+        "Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a complete Google Sheets assistant with full access to data, formatting, and visual tools. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call without exception.\n\n"
+
+        "=== EXECUTION ORDER FOR COMPLEX TASKS ===\n"
+        "1. DATA FIRST: create spreadsheet / write data / manage worksheets\n"
+        "2. FORMAT SECOND: colors, fonts, borders, freeze, resize\n"
+        "3. VISUALS LAST: charts, conditional formatting, dropdowns, sparklines\n\n"
+
+        "=== RANGE NOTATION RULES (critical) ===\n"
+        "- read_sheet, write_sheet, append_rows, clear_range, sort_range: range MUST include sheet name, e.g. 'Sheet1!A1:D10'\n"
+        "- format_cells, set_borders, merge_cells, freeze_rows_columns, align_cells, set_number_format: range must NOT include sheet name, e.g. 'A1:D10'\n"
+        "- create_chart data_range: MUST include sheet name, e.g. 'Sheet1!A1:C10'\n"
+        "- add_conditional_formatting, add_data_validation: range must NOT include sheet name\n\n"
+
+        "=== DATA TOOLS ===\n"
+        "- create_spreadsheet: create a new spreadsheet (returns spreadsheet_id, sheet_id, URL — save these!)\n"
+        "- list_spreadsheets: list user's spreadsheets in Drive\n"
+        "- get_spreadsheet_info: get worksheet names and sheetIds (use before formatting/charting)\n"
+        "- read_sheet: read values from a range\n"
+        "- write_sheet: write a 2D array to a range. values MUST be a valid JSON string like "
+        "'[[\"Header1\",\"Header2\"],[\"val1\",\"val2\"]]' — always use double quotes inside the JSON\n"
+        "- append_rows: append rows below existing data\n"
+        "- clear_range: clear values from a range\n"
+        "- add_worksheet / delete_worksheet / rename_worksheet / duplicate_worksheet: manage tabs\n"
+        "- sort_range: sort rows by a column\n"
+        "- find_and_replace: find and replace text\n\n"
+
+        "=== FORMAT TOOLS ===\n"
+        "- format_cells: background_color and text_color as hex e.g. '#4285F4'. bold/italic as true/false\n"
+        "- set_borders: sides can be 'all', 'outer', 'inner', or comma-separated e.g. 'top,bottom'\n"
+        "- merge_cells / unmerge_cells: merge a range\n"
+        "- freeze_rows_columns: frozen_rows=1 freezes the header row\n"
+        "- set_column_width / set_row_height / auto_resize_columns: resize dimensions\n"
+        "- set_number_format: format_type can be 'currency', 'percent', 'date', 'number', 'text'\n"
+        "- align_cells: horizontal='CENTER'/'LEFT'/'RIGHT', vertical='TOP'/'MIDDLE'/'BOTTOM'\n\n"
+
+        "=== VISUAL TOOLS ===\n"
+        "- create_chart: chart_type = BAR, COLUMN, LINE, AREA, PIE, SCATTER, or COMBO\n"
+        "- list_charts / delete_chart: manage existing charts\n"
+        "- add_conditional_formatting: rule_type = 'gradient' (color scale) or 'single_color' (highlight rule)\n"
+        "- add_data_validation: validation_type = 'dropdown_list', 'checkbox', 'number_range', 'text_contains'\n"
+        "- add_sparklines: sparkline_type = LINE, BAR, COLUMN, or WINLOSS\n\n"
+
+        "Always verify each step actually succeeded before moving to the next. "
+        "Return a complete summary with the spreadsheet URL at the end."
+    ),
+    tools=[
+        # Data tools
+        "mcp__sheets_data__create_spreadsheet",
+        "mcp__sheets_data__list_spreadsheets",
+        "mcp__sheets_data__get_spreadsheet_info",
+        "mcp__sheets_data__read_sheet",
+        "mcp__sheets_data__write_sheet",
+        "mcp__sheets_data__append_rows",
+        "mcp__sheets_data__clear_range",
+        "mcp__sheets_data__add_worksheet",
+        "mcp__sheets_data__delete_worksheet",
+        "mcp__sheets_data__rename_worksheet",
+        "mcp__sheets_data__duplicate_worksheet",
+        "mcp__sheets_data__sort_range",
+        "mcp__sheets_data__find_and_replace",
+        # Format tools
+        "mcp__sheets_format__get_spreadsheet_info",
+        "mcp__sheets_format__format_cells",
+        "mcp__sheets_format__set_borders",
+        "mcp__sheets_format__merge_cells",
+        "mcp__sheets_format__unmerge_cells",
+        "mcp__sheets_format__freeze_rows_columns",
+        "mcp__sheets_format__set_column_width",
+        "mcp__sheets_format__set_row_height",
+        "mcp__sheets_format__auto_resize_columns",
+        "mcp__sheets_format__set_number_format",
+        "mcp__sheets_format__align_cells",
+        # Visual tools
+        "mcp__sheets_visual__get_spreadsheet_info",
+        "mcp__sheets_visual__create_chart",
+        "mcp__sheets_visual__list_charts",
+        "mcp__sheets_visual__delete_chart",
+        "mcp__sheets_visual__add_conditional_formatting",
+        "mcp__sheets_visual__add_data_validation",
+        "mcp__sheets_visual__add_sparklines",
+    ],
+    model="sonnet",
 )
