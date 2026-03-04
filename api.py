@@ -313,14 +313,17 @@ async def chat(
     # transcript on its end — full unlimited memory, no manual history needed
     claude_session_id: str | None = session.get("claude_session_id")
 
+    # Always load DB history — used as fallback if the SDK transcript is missing
+    history = get_messages(session_id)
+
     # Save the current user message
     add_message(session_id, role="user", content=body.message)
 
-    # Run the agent — pass claude_session_id so the SDK can resume the session
+    # Run the agent — tries native resume first, falls back to DB history if needed
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         reply, new_claude_session_id = await loop.run_in_executor(
-            pool, _run_agent_in_thread, body.message, user_id, claude_session_id
+            pool, _run_agent_in_thread, body.message, user_id, claude_session_id, history
         )
 
     # Save the assistant reply
@@ -338,7 +341,10 @@ async def chat(
 # ---------------------------------------------------------------------------
 
 def _run_agent_in_thread(
-    user_message: str, user_id: int, claude_session_id: str | None
+    user_message: str,
+    user_id: int,
+    claude_session_id: str | None,
+    history: list[dict],
 ) -> tuple[str, str | None]:
     """
     Runs in a worker thread. Creates a fresh ProactorEventLoop (Windows-safe)
@@ -352,20 +358,54 @@ def _run_agent_in_thread(
     try:
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(
-            _run_agent(user_message, user_id, claude_session_id)
+            _run_agent(user_message, user_id, claude_session_id, history)
         )
     finally:
         loop.close()
         asyncio.set_event_loop(None)
 
 
+def _build_context_from_db(history: list[dict], current_message: str) -> str:
+    """
+    Reconstruct full conversation context from DB messages (no cap).
+    Used as fallback when the SDK transcript file is missing / session expired.
+    """
+    if not history:
+        return current_message
+
+    lines = [
+        "[CONVERSATION HISTORY — use this to recall all prior context]",
+        "",
+    ]
+    for msg in history:
+        role_label = "User" if msg["role"] == "user" else "Assistant"
+        lines.append(f"{role_label}: {msg['content']}")
+
+    lines += [
+        "",
+        "[CURRENT MESSAGE]",
+        f"User: {current_message}",
+    ]
+    return "\n".join(lines)
+
+
 async def _run_agent(
-    user_message: str, user_id: int, claude_session_id: str | None
+    user_message: str,
+    user_id: int,
+    claude_session_id: str | None,
+    history: list[dict],
 ) -> tuple[str, str | None]:
     """
     Async agent runner — must be called inside a ProactorEventLoop on Windows.
-    Uses the Claude SDK's native session resumption (resume=claude_session_id)
-    so Claude remembers the full conversation with no cap or summarization.
+
+    Memory strategy (belt-and-suspenders):
+      1. PRIMARY   — pass resume=claude_session_id to the SDK so it loads the
+                     local transcript file. Full, uncapped, zero overhead.
+      2. FALLBACK  — if the transcript is missing (server restart, migration, etc.)
+                     the SDK raises an error. We catch it, rebuild the full
+                     conversation from DB messages (no cap), and start a fresh
+                     SDK session seeded with that history.
+
     Returns (reply_text, new_claude_session_id).
     """
     import os
@@ -394,50 +434,62 @@ async def _run_agent(
             env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
         return env
 
-    options = ClaudeAgentOptions(
-        mcp_servers={
-            "my_tools": my_tools_server,
-            "gmail_tools": gmail_tools_server,
-        },
-        agents={
-            "data_processor": data_processor_agent,
-            "email_drafter": email_drafter_agent,
-            "gmail_agent": gmail_agent,
-        },
-        tools=["Skill", "Task", "Bash", "Read", "Write"],
-        allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
-        setting_sources=["project"],
-        system_prompt=(
-            f"You are working in a restricted directory. Always use RELATIVE paths. "
-            f"Your working directory is: {agent_cwd}. "
-            f"The current user's ID is: {user_id}. "
-            "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
-            "- Mock data / file processing → delegate to 'data_processor' subagent\n"
-            "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
-            f"- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → "
-            f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
-        ),
-        permission_mode="bypassPermissions",
-        cwd=str(agent_cwd),
-        env=_build_cli_env(),
-        # Resume the existing SDK session so Claude has full unlimited memory.
-        # On the very first message this is None (fresh session).
-        resume=claude_session_id,
-    )
+    def _make_options(resume_id: str | None) -> ClaudeAgentOptions:
+        return ClaudeAgentOptions(
+            mcp_servers={
+                "my_tools": my_tools_server,
+                "gmail_tools": gmail_tools_server,
+            },
+            agents={
+                "data_processor": data_processor_agent,
+                "email_drafter": email_drafter_agent,
+                "gmail_agent": gmail_agent,
+            },
+            tools=["Skill", "Task", "Bash", "Read", "Write"],
+            allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
+            setting_sources=["project"],
+            system_prompt=(
+                f"You are working in a restricted directory. Always use RELATIVE paths. "
+                f"Your working directory is: {agent_cwd}. "
+                f"The current user's ID is: {user_id}. "
+                "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
+                "- Mock data / file processing → delegate to 'data_processor' subagent\n"
+                "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
+                f"- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → "
+                f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
+            ),
+            permission_mode="bypassPermissions",
+            cwd=str(agent_cwd),
+            env=_build_cli_env(),
+            resume=resume_id,
+        )
 
-    text_chunks: list[str] = []
-    new_claude_session_id: str | None = None
+    async def _execute(options: ClaudeAgentOptions, msg: str) -> tuple[str, str | None]:
+        text_chunks: list[str] = []
+        new_sid: str | None = None
+        async with ClaudeSDKClient(options=options) as client:
+            await client.query(msg)
+            async for message in client.receive_response():
+                if isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock):
+                            text_chunks.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    new_sid = message.session_id
+        reply = "\n".join(text_chunks) if text_chunks else "(no response)"
+        return reply, new_sid
 
-    async with ClaudeSDKClient(options=options) as client:
-        await client.query(user_message)
-        async for message in client.receive_response():
-            if isinstance(message, AssistantMessage):
-                for block in message.content:
-                    if isinstance(block, TextBlock):
-                        text_chunks.append(block.text)
-            elif isinstance(message, ResultMessage):
-                # Capture the SDK session ID to persist for the next turn
-                new_claude_session_id = message.session_id
+    # ── PRIMARY: native SDK session resumption ──────────────────────────────
+    if claude_session_id:
+        try:
+            return await _execute(_make_options(claude_session_id), user_message)
+        except Exception as primary_err:
+            print(
+                f"\n[Memory] SDK resume failed for session '{claude_session_id}': "
+                f"{primary_err}\n"
+                f"[Memory] Falling back to full DB history reconstruction.\n"
+            )
 
-    reply = "\n".join(text_chunks) if text_chunks else "(no response)"
-    return reply, new_claude_session_id
+    # ── FALLBACK: rebuild full context from DB messages (no cap) ────────────
+    full_message = _build_context_from_db(history, user_message)
+    return await _execute(_make_options(None), full_message)
