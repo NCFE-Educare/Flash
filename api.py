@@ -2,12 +2,17 @@
 
 import asyncio
 import concurrent.futures
+import shutil
 import sys
+import uuid
+from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, status
-from fastapi.responses import HTMLResponse
+from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
@@ -35,10 +40,27 @@ from database import (
 
 app = FastAPI(title="EduCare Bots API", version="1.0.0")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Uploaded images are stored in cwd/uploads/ so the agent can read them too
+UPLOADS_DIR = Path(__file__).parent / "cwd" / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
+
+ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+
 
 @app.on_event("startup")
 def on_startup():
     init_db()
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -72,12 +94,14 @@ class SessionRenameRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     session_id: int | None = None   # omit to auto-create a new session
+    image_urls: list[str] = []      # list of relative URLs returned by POST /upload
 
 
 class ChatResponse(BaseModel):
     reply: str
     user: str
     session_id: int
+    image_urls: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -363,6 +387,64 @@ def delete_session_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Image upload endpoint
+# ---------------------------------------------------------------------------
+
+@app.post("/upload", tags=["Chat"])
+async def upload_images(
+    files: Annotated[list[UploadFile], File()],
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """
+    Upload one or more images to attach to a chat message.
+    Returns { "image_urls": ["/uploads/<filename>", ...] } which you pass to POST /chat.
+    Supported formats: JPEG, PNG, GIF, WEBP (max 10 MB each, max 10 images).
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > 10:
+        raise HTTPException(status_code=400, detail="Maximum 10 images per upload.")
+
+    image_urls: list[str] = []
+    for file in files:
+        if file.content_type not in ALLOWED_IMAGE_TYPES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{file.content_type}' for '{file.filename}'. Allowed: JPEG, PNG, GIF, WEBP.",
+            )
+
+        suffix = Path(file.filename or "upload").suffix.lower()
+        if suffix not in ALLOWED_IMAGE_EXTENSIONS:
+            suffix = ".jpg"
+
+        filename = f"{uuid.uuid4().hex}{suffix}"
+        dest = UPLOADS_DIR / filename
+
+        contents = await file.read()
+        if len(contents) > 10 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail=f"File '{file.filename}' is too large. Maximum size is 10 MB.")
+
+        with open(dest, "wb") as f:
+            f.write(contents)
+
+        image_urls.append(f"/uploads/{filename}")
+
+    return {"image_urls": image_urls}
+
+
+@app.get("/uploads/{filename}", tags=["Chat"])
+async def get_upload(filename: str):
+    """
+    Serve an uploaded image file.
+    This explicit route ensures CORS headers are applied (unlike StaticFiles mounts).
+    """
+    file_path = UPLOADS_DIR / filename
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(status_code=404, detail="Image not found.")
+    return FileResponse(file_path)
+
+
+# ---------------------------------------------------------------------------
 # Chat endpoint (protected + session-aware)
 # ---------------------------------------------------------------------------
 
@@ -398,14 +480,18 @@ async def chat(
     # Always load DB history — used as fallback if the SDK transcript is missing
     history = get_messages(session_id)
 
-    # Save the current user message
-    add_message(session_id, role="user", content=body.message)
+    # Serialize image list as JSON string for DB storage (empty list → None)
+    import json as _json
+    image_urls_json = _json.dumps(body.image_urls) if body.image_urls else None
+
+    # Save the current user message (with optional images)
+    add_message(session_id, role="user", content=body.message, image_url=image_urls_json)
 
     # Run the agent — tries native resume first, falls back to DB history if needed
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         reply, new_claude_session_id = await loop.run_in_executor(
-            pool, _run_agent_in_thread, body.message, user_id, claude_session_id, history
+            pool, _run_agent_in_thread, body.message, user_id, claude_session_id, history, body.image_urls
         )
 
     # Save the assistant reply
@@ -415,49 +501,7 @@ async def chat(
     if new_claude_session_id:
         save_claude_session_id(session_id, new_claude_session_id)
 
-    return ChatResponse(reply=reply, user=current_user["username"], session_id=session_id)
-
-
-# ---------------------------------------------------------------------------
-# Markdown stripper — converts agent markdown output to clean plain text
-# ---------------------------------------------------------------------------
-
-def _strip_markdown(text: str) -> str:
-    """
-    Convert markdown-formatted text to clean plain text for chat display.
-    Removes bold/italic markers, headers, and normalises bullet lists.
-    """
-    import re
-
-    # Decode literal escape sequences like \\n that some models emit
-    text = text.replace("\\n", "\n").replace("\\t", "\t")
-
-    # Remove markdown headers (# Heading, ## Heading, etc.)
-    text = re.sub(r"^#{1,6}\s+", "", text, flags=re.MULTILINE)
-
-    # Remove bold/italic markers (**text**, *text*, __text__, _text_)
-    text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text)
-    text = re.sub(r"_{1,3}(.*?)_{1,3}", r"\1", text)
-
-    # Remove inline code backticks but keep the content
-    text = re.sub(r"`{1,3}(.*?)`{1,3}", r"\1", text, flags=re.DOTALL)
-
-    # Convert markdown links [label](url) → label (url)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", text)
-
-    # Convert markdown bullet lists (- item or * item) to plain lines
-    text = re.sub(r"^[\-\*]\s+", "• ", text, flags=re.MULTILINE)
-
-    # Convert numbered lists (1. item) — keep number but clean up
-    text = re.sub(r"^\d+\.\s+", lambda m: m.group(0), text, flags=re.MULTILINE)
-
-    # Remove horizontal rules (--- or ***)
-    text = re.sub(r"^[\-\*_]{3,}\s*$", "", text, flags=re.MULTILINE)
-
-    # Collapse more than 2 consecutive blank lines into 2
-    text = re.sub(r"\n{3,}", "\n\n", text)
-
-    return text.strip()
+    return ChatResponse(reply=reply, user=current_user["username"], session_id=session_id, image_urls=body.image_urls)
 
 
 # ---------------------------------------------------------------------------
@@ -469,6 +513,7 @@ def _run_agent_in_thread(
     user_id: int,
     claude_session_id: str | None,
     history: list[dict],
+    image_urls: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Runs in a worker thread. Creates a fresh ProactorEventLoop (Windows-safe)
@@ -482,7 +527,7 @@ def _run_agent_in_thread(
     try:
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(
-            _run_agent(user_message, user_id, claude_session_id, history)
+            _run_agent(user_message, user_id, claude_session_id, history, image_urls or [])
         )
     finally:
         loop.close()
@@ -503,7 +548,17 @@ def _build_context_from_db(history: list[dict], current_message: str) -> str:
     ]
     for msg in history:
         role_label = "User" if msg["role"] == "user" else "Assistant"
-        lines.append(f"{role_label}: {msg['content']}")
+        line = f"{role_label}: {msg['content']}"
+        if msg.get("image_url"):
+            import json as _json
+            try:
+                urls = _json.loads(msg["image_url"])
+            except (ValueError, TypeError):
+                urls = [msg["image_url"]]
+            for url in urls:
+                fname = url.lstrip("/").replace("uploads/", "", 1)
+                line += f" [attached image: uploads/{fname}]"
+        lines.append(line)
 
     lines += [
         "",
@@ -518,6 +573,7 @@ async def _run_agent(
     user_id: int,
     claude_session_id: str | None,
     history: list[dict],
+    image_urls: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Async agent runner — must be called inside a ProactorEventLoop on Windows.
@@ -588,13 +644,13 @@ async def _run_agent(
                 f"The current user's ID is: {user_id}. "
 
                 "\n\n=== RESPONSE FORMATTING RULES (follow strictly) ===\n"
-                "- Write in clean, plain conversational English. NO markdown symbols.\n"
-                "- Do NOT use **bold**, *italic*, __underline__, or any asterisks/underscores for emphasis.\n"
-                "- Do NOT use markdown headers like # or ##.\n"
-                "- Do NOT use markdown bullet lists with - or * or numbered lists with 1. 2. 3.\n"
-                "- Instead of bullet lists, write naturally in short sentences or use a simple newline between items.\n"
-                "- Use ONLY plain text — as if you are writing a friendly chat message.\n"
-                "- Emojis like ✅ or 📋 are fine to use for visual clarity.\n"
+                "- Use Markdown to make responses readable and scannable.\n"
+                "- Use **bold** for key terms, headings, and important points.\n"
+                "- Use *italics* for subtle emphasis where helpful.\n"
+                "- Use bullet lists (- or *) for options, steps, or multiple items.\n"
+                "- Use numbered lists (1. 2. 3.) for ordered steps or procedures.\n"
+                "- Use markdown tables when presenting structured data (columns/rows).\n"
+                "- Use emojis sparingly (1–3 per response) for clarity — e.g. ✅ 📋 📊 — not in every sentence.\n"
                 "- Keep responses concise and friendly. Avoid walls of text.\n"
 
                 "\n=== DELEGATION RULES (always use Task tool, never handle yourself) ===\n"
@@ -625,13 +681,31 @@ async def _run_agent(
                 elif isinstance(message, ResultMessage):
                     new_sid = message.session_id
         raw = "\n".join(text_chunks) if text_chunks else "(no response)"
-        reply = _strip_markdown(raw)
-        return reply, new_sid
+        # Decode literal escape sequences some models emit
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+        # Return raw markdown so frontend can render bold, lists, tables, etc.
+        return raw, new_sid
+
+    # If the user attached images, append a note so the agent reads them
+    effective_message = user_message
+    if image_urls:
+        paths = ", ".join(
+            f"uploads/{url.lstrip('/').replace('uploads/', '', 1)}"
+            for url in image_urls
+        )
+        count = len(image_urls)
+        label = "image" if count == 1 else f"{count} images"
+        effective_message = (
+            f"{user_message}\n\n"
+            f"[The user has attached {label}. Use the Read tool to view "
+            f"{'it' if count == 1 else 'each one'} at the relative "
+            f"{'path' if count == 1 else 'paths'}: {paths}]"
+        )
 
     # ── PRIMARY: native SDK session resumption ──────────────────────────────
     if claude_session_id:
         try:
-            return await _execute(_make_options(claude_session_id), user_message)
+            return await _execute(_make_options(claude_session_id), effective_message)
         except Exception as primary_err:
             print(
                 f"\n[Memory] SDK resume failed for session '{claude_session_id}': "
@@ -640,5 +714,5 @@ async def _run_agent(
             )
 
     # ── FALLBACK: rebuild full context from DB messages (no cap) ────────────
-    full_message = _build_context_from_db(history, user_message)
+    full_message = _build_context_from_db(history, effective_message)
     return await _execute(_make_options(None), full_message)
