@@ -319,3 +319,42 @@ docs_agent = AgentDefinition(
     ],
     model="haiku",
 )
+
+
+# ---------------------------------------------------------------------------
+# Google Drive agent
+# ---------------------------------------------------------------------------
+
+drive_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Drive tasks: search, list, create, upload, rename, move, delete, share. "
+        "Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Drive assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- search_drive: search by name or full-text (query, search_type, mime_type optional)\n"
+        "- list_drive_files: list files with optional mime_type filter\n"
+        "- get_file_metadata: get details for a file by file_id\n"
+        "- create_folder: create a folder (name, parent_id optional)\n"
+        "- create_file_from_text: create a text file from content (content, name, mime_type, parent_id optional)\n"
+        "- delete_file: move file to trash (file_id)\n"
+        "- move_file: move file to a folder (file_id, target_folder_id)\n"
+        "- rename_file: rename a file (file_id, new_name)\n"
+        "- share_file: share with email (share_with_email, role) or make link-shareable (share_with_anyone=true)\n"
+        "Always complete the task and return a clear summary with file names and links."
+    ),
+    tools=[
+        "mcp__drive__search_drive",
+        "mcp__drive__list_drive_files",
+        "mcp__drive__get_file_metadata",
+        "mcp__drive__create_folder",
+        "mcp__drive__create_file_from_text",
+        "mcp__drive__delete_file",
+        "mcp__drive__move_file",
+        "mcp__drive__rename_file",
+        "mcp__drive__share_file",
+    ],
+    model="haiku",
+)
