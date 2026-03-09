@@ -23,9 +23,11 @@ from database import (
     add_message,
     create_session,
     create_user,
+    delete_docs_tokens,
     delete_gmail_tokens,
     delete_session,
     delete_sheets_tokens,
+    get_docs_tokens,
     get_gmail_tokens,
     get_messages,
     get_session,
@@ -340,6 +342,86 @@ def sheets_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
     """Remove the stored Sheets tokens, disconnecting Google Sheets for this user."""
     user_id = int(current_user["sub"])
     delete_sheets_tokens(user_id)
+
+
+# ---------------------------------------------------------------------------
+# Google Docs OAuth endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/docs/connect", tags=["Docs"])
+def docs_connect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """
+    Generate the Google OAuth URL for Docs + Drive access.
+    The frontend should open this URL in a browser/popup so the user can
+    grant access. After approval Google redirects to /auth/docs/callback.
+    """
+    from docs_tools import get_docs_auth_url
+    user_id = int(current_user["sub"])
+    try:
+        auth_url = get_docs_auth_url(user_id)
+        return {"auth_url": auth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/docs/callback", response_class=HTMLResponse, tags=["Docs"])
+def docs_callback(code: str, state: str):
+    """
+    Google redirects here after the user approves Docs access.
+    Exchanges the code for tokens, saves them, and shows a success page.
+    This endpoint does NOT require a JWT — it is called by Google's redirect.
+    """
+    from docs_tools import exchange_docs_code
+    result = exchange_docs_code(code, state)
+    if result:
+        return HTMLResponse(content=f"""
+        <html>
+        <head><title>Google Docs Connected</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">✅</div>
+                <h2 style="color:#1a1a1a;">Google Docs Connected!</h2>
+                <p style="color:#555;">Connected account:<br><strong>{result['email']}</strong></p>
+                <p style="color:#888;font-size:14px;">You can close this tab and return to the chatbot.</p>
+            </div>
+        </body>
+        </html>
+        """)
+
+    return HTMLResponse(
+        status_code=400,
+        content="""
+        <html>
+        <head><title>Connection Failed</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">❌</div>
+                <h2 style="color:#1a1a1a;">Connection Failed</h2>
+                <p style="color:#555;">Could not connect your Google Docs account. Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """,
+    )
+
+
+@app.get("/auth/docs/status", tags=["Docs"])
+def docs_status(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Check whether the logged-in user has connected their Google Docs account."""
+    user_id = int(current_user["sub"])
+    tokens = get_docs_tokens(user_id)
+    return {
+        "connected": tokens is not None,
+        "google_email": tokens["google_email"] if tokens else None,
+        "connected_at": tokens["connected_at"] if tokens else None,
+    }
+
+
+@app.delete("/auth/docs/disconnect", status_code=204, tags=["Docs"])
+def docs_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Remove the stored Docs tokens, disconnecting Google Docs for this user."""
+    user_id = int(current_user["sub"])
+    delete_docs_tokens(user_id)
 
 
 # ---------------------------------------------------------------------------

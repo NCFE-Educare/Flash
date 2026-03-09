@@ -37,9 +37,10 @@ def make_agent_options(
         resume_id:                 Claude session ID to resume (None = new session).
         include_partial_messages:  Set True for streaming endpoints.
     """
+    from docs_tools import docs_server
     from gmail_tools import gmail_tools_server
     from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
-    from sub_agent import data_processor_agent, email_drafter_agent, gmail_agent, sheets_agent
+    from sub_agent import data_processor_agent, docs_agent, email_drafter_agent, gmail_agent, sheets_agent
     from tools import my_tools_server
 
     uid = str(user_id) if user_id is not None else None
@@ -53,7 +54,11 @@ def make_agent_options(
         sheets_rule = (
             f"- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
             f"conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
-            f"delegate to 'sheets_agent' subagent. Always include 'user_id={uid}' in the task prompt."
+            f"delegate to 'sheets_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
+        )
+        docs_rule = (
+            f"- ANY Google Docs task (create document, read content, insert/append/replace text, etc.) → "
+            f"delegate to 'docs_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
         )
     else:
         user_context = (
@@ -67,7 +72,11 @@ def make_agent_options(
         sheets_rule = (
             "- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
             "conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
-            "delegate to 'sheets_agent' subagent. Always include the user_id in the task prompt."
+            "delegate to 'sheets_agent' subagent. Always include the user_id in the task prompt.\n"
+        )
+        docs_rule = (
+            "- ANY Google Docs task (create document, read content, insert/append/replace text, etc.) → "
+            "delegate to 'docs_agent' subagent. Always include the user_id in the task prompt.\n"
         )
 
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -103,6 +112,7 @@ def make_agent_options(
         "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
         + gmail_rule
         + sheets_rule
+        + docs_rule
     )
 
     base_tools = ["Skill", "Task", "Bash", "Read", "Write", "WebSearch"]
@@ -115,6 +125,7 @@ def make_agent_options(
         "mcp__sheets_data__*",
         "mcp__sheets_format__*",
         "mcp__sheets_visual__*",
+        "mcp__docs__*",
     ]
 
     kwargs: dict = dict(
@@ -124,12 +135,14 @@ def make_agent_options(
             "sheets_data": sheets_data_server,
             "sheets_format": sheets_format_server,
             "sheets_visual": sheets_visual_server,
+            "docs": docs_server,
         },
         agents={
             "data_processor": data_processor_agent,
             "email_drafter": email_drafter_agent,
             "gmail_agent": gmail_agent,
             "sheets_agent": sheets_agent,
+            "docs_agent": docs_agent,
         },
         tools=base_tools,
         allowed_tools=base_tools + mcp_tool_permissions,

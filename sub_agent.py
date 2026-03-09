@@ -286,3 +286,36 @@ sheets_agent = AgentDefinition(
     ],
     model="sonnet",
 )
+
+
+# ---------------------------------------------------------------------------
+# Google Docs agent
+# ---------------------------------------------------------------------------
+
+docs_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Docs task: create documents, read content, "
+        "insert/append/replace text, format text. Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Docs assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- create_document: create a new doc (returns document_id, url, title)\n"
+        "- list_documents: list user's Google Docs from Drive\n"
+        "- get_document: read full document content\n"
+        "- insert_text: insert text at a specific index\n"
+        "- replace_text: find and replace text\n"
+        "- append_text: append text to end of document\n"
+        "Always complete the task fully and return a clear summary with the document URL."
+    ),
+    tools=[
+        "mcp__docs__create_document",
+        "mcp__docs__list_documents",
+        "mcp__docs__get_document",
+        "mcp__docs__insert_text",
+        "mcp__docs__replace_text",
+        "mcp__docs__append_text",
+    ],
+    model="haiku",
+)
