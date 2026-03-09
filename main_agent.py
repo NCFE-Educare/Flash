@@ -14,7 +14,6 @@ if _env_path.exists():
 
 from claude_agent_sdk import (
     ClaudeSDKClient,
-    ClaudeAgentOptions,
     AssistantMessage,
     TextBlock,
     ToolUseBlock,
@@ -22,68 +21,15 @@ from claude_agent_sdk import (
     ResultMessage,
 )
 
-# Import our modularized components
-from tools import my_tools_server
-from gmail_tools import gmail_tools_server
-from sub_agent import data_processor_agent, email_drafter_agent, gmail_agent
-
-
-def _build_cli_env() -> dict[str, str]:
-    """Build env vars for the CLI subprocess. Enables Bedrock when USE_BEDROCK=1 in .env."""
-    env: dict[str, str] = {}
-    if os.environ.get("USE_BEDROCK", "").strip() == "1":
-        env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
-        # AWS creds from env (AWS_ACCESS_KEY_ID, etc.) or AWS_BEARER_TOKEN_BEDROCK
-    return env
+from agent_config import make_agent_options
 
 
 async def main():
-    # Agent workspace - restrict to this folder only
     _agent_cwd = Path(__file__).parent / "cwd"
     _agent_cwd.mkdir(exist_ok=True)
 
-    options = ClaudeAgentOptions(
-        # 1. Register MCP servers
-        mcp_servers={
-            "my_tools": my_tools_server,
-            "gmail_tools": gmail_tools_server,
-        },
-        
-        # 2. Register subagents
-        agents={
-            "data_processor": data_processor_agent,
-            "email_drafter": email_drafter_agent,
-            "gmail_agent": gmail_agent,
-        },
-        
-        # 3. Restrict main agent tools - NO read_mock_data/draft_email so it MUST delegate to subagents
-        tools=["Skill", "Task", "Bash", "Read", "Write"],
-        allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
-        
-        # 4. Tell the SDK to look for the .claude/skills/ folder in the project
-        setting_sources=["project"],
-        
-        # 4b. Force agent to use relative paths + delegate all tasks to subagents
-        system_prompt=(
-            f"You are working in a restricted directory. Always use RELATIVE paths (e.g. 'test.txt', './report.txt') - never absolute paths like /home/user/ or C:/. Your working directory is: {_agent_cwd}. "
-            "IMPORTANT — always delegate using the Task tool, never handle these yourself:\n"
-            "- Mock data / file processing → delegate to 'data_processor' subagent\n"
-            "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
-            "- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → delegate to 'gmail_agent' subagent. "
-            "Always include the user_id in the task prompt when delegating to gmail_agent.\n"
-            "NOTE: In this CLI mode there is no logged-in user_id — ask the user to provide their user_id before delegating Gmail tasks."
-        ),
-        
-        # 5. Auto-approve tools so subagent can run MCP tools without interactive permission prompt
-        permission_mode="bypassPermissions",
-        
-        # 6. Restrict agent to this folder only (not your whole directory)
-        cwd=str(_agent_cwd),
-        
-        # 7. Pass env to CLI subprocess (for Bedrock: set USE_BEDROCK=1 in .env)
-        env=_build_cli_env(),
-    )
+    # No user_id in CLI mode — agent will ask the user if needed
+    options = make_agent_options(agent_cwd=_agent_cwd)
 
     # Map model names to agent names (CLI may not send agent name in Task input)
     model_to_agent = {}
@@ -113,6 +59,9 @@ async def main():
                         task = str(block.input.get("prompt") or block.input.get("task") or block.input.get("description", ""))
                         task_preview = task[:80] + "..." if len(task) > 80 else task
                         print(f"  → [Subagent] Delegating to '{agent_name}': {task_preview}")
+                    elif block.name == "WebSearch":
+                        query = block.input.get("query", "")
+                        print(f"  → [WebSearch] Searching: {query}")
                     else:
                         print(f"  → [Tool] {block.name} {block.input}")
                 elif isinstance(block, TextBlock):

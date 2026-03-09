@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Stream Test - EduCare Chat</title>
+  <style>
+    body { font-family: system-ui; max-width: 600px; margin: 2rem auto; padding: 0 1rem; }
+    input, button { padding: 0.5rem 1rem; margin: 0.25rem 0; }
+    #output { white-space: pre-wrap; min-height: 100px; border: 1px solid #ccc; padding: 1rem; margin-top: 1rem; }
+    .chunk { color: #666; font-size: 0.9em; }
+  </style>
+</head>
+<body>
+  <h1>Stream Test</h1>
+  <p><strong>Critical:</strong> Streaming only works when you use <code>res.body.getReader()</code> and process chunks in a loop. Using <code>await res.text()</code> or <code>await res.json()</code> waits for the full response and shows everything at once.</p>
+  <p>With your API running, visit <code>http://localhost:8000/stream-test</code> or open this file and enter your token.</p>
+  <div>
+    <label>API URL: <input id="apiUrl" value="http://localhost:8000" style="width: 200px;"></label>
+  </div>
+  <div>
+    <label>Token: <input id="token" type="password" placeholder="Bearer token" style="width: 300px;"></label>
+  </div>
+  <div>
+    <label>Message: <input id="message" value="What can you help me with?" style="width: 300px;"></label>
+  </div>
+  <button id="send">Send (streaming)</button>
+  <div id="output"></div>
+
+  <script>
+    document.getElementById('send').onclick = async () => {
+      const apiUrl = document.getElementById('apiUrl').value.replace(/\/$/, '');
+      const token = document.getElementById('token').value.trim();
+      const message = document.getElementById('message').value;
+      const output = document.getElementById('output');
+
+      if (!token) {
+        output.textContent = 'Error: Enter your Bearer token';
+        return;
+      }
+
+      output.textContent = 'Connecting...\n';
+
+      try {
+        const res = await fetch(apiUrl + '/chat/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + token,
+          },
+          body: JSON.stringify({ message, session_id: null }),
+        });
+
+        if (!res.ok) {
+          output.textContent += `Error: ${res.status} ${res.statusText}`;
+          return;
+        }
+
+        output.textContent = 'Streaming...\n\n';
+        let fullText = '';
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          let eventType = '';
+          let dataStr = '';
+
+          for (const line of lines) {
+            if (line.startsWith('event: ')) eventType = line.slice(7);
+            else if (line.startsWith('data: ')) dataStr = line.slice(6);
+            else if (line === '' && dataStr) {
+              try {
+                const data = JSON.parse(dataStr);
+                if (eventType === 'text' && data.content) {
+                  fullText += data.content;
+                  output.textContent = fullText;
+                  output.scrollTop = output.scrollHeight;
+                } else if (eventType === 'tool_start') {
+                  output.textContent = fullText + '\n\n[Using ' + data.tool + '...]\n';
+                } else if (eventType === 'done') {
+                  output.textContent = data.reply || fullText;
+                }
+              } catch (_) {}
+              dataStr = '';
+            }
+          }
+        }
+
+        output.textContent += '\n\n--- Stream complete ---';
+      } catch (err) {
+        output.textContent += 'Error: ' + err.message;
+      }
+    };
+  </script>
+</body>
+</html>

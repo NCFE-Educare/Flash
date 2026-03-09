@@ -2,15 +2,18 @@
 
 import asyncio
 import concurrent.futures
+import json
 import shutil
 import sys
+import threading
 import uuid
 from pathlib import Path
+from queue import Queue
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
@@ -56,6 +59,18 @@ app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads")
 ALLOWED_IMAGE_TYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 
+ALLOWED_DOC_TYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint",
+    "text/plain",
+}
+ALLOWED_DOC_EXTENSIONS = {".pdf", ".docx", ".pptx", ".ppt", ".txt"}
+MAX_DOC_SIZE_MB = 20
+MAX_DOCS_PER_UPLOAD = 5
+MAX_EXTRACTED_TEXT_CHARS = 100_000
+
 
 @app.on_event("startup")
 def on_startup():
@@ -95,6 +110,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: int | None = None   # omit to auto-create a new session
     image_urls: list[str] = []      # list of relative URLs returned by POST /upload
+    document_urls: list[str] = []   # list of relative URLs returned by POST /upload/document
 
 
 class ChatResponse(BaseModel):
@@ -102,6 +118,7 @@ class ChatResponse(BaseModel):
     user: str
     session_id: int
     image_urls: list[str] = []
+    document_urls: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -432,6 +449,69 @@ async def upload_images(
     return {"image_urls": image_urls}
 
 
+# ---------------------------------------------------------------------------
+# Document upload endpoint (PDF, DOCX, PPTX, TXT)
+# ---------------------------------------------------------------------------
+
+@app.post("/upload/document", tags=["Chat"])
+async def upload_documents(
+    files: Annotated[list[UploadFile], File()],
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """
+    Upload one or more documents to attach to a chat message.
+    Returns { "document_urls": ["/uploads/<filename>", ...] } which you pass to POST /chat.
+    Supported formats: PDF, DOCX, PPTX, PPT, TXT (max 20 MB each, max 5 documents).
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided.")
+    if len(files) > MAX_DOCS_PER_UPLOAD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Maximum {MAX_DOCS_PER_UPLOAD} documents per upload.",
+        )
+
+    document_urls: list[str] = []
+    max_bytes = MAX_DOC_SIZE_MB * 1024 * 1024
+
+    for file in files:
+        content_type = file.content_type or ""
+        suffix = Path(file.filename or "upload").suffix.lower()
+
+        if content_type not in ALLOWED_DOC_TYPES and suffix not in ALLOWED_DOC_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type '{content_type}' for '{file.filename}'. "
+                f"Allowed: PDF, DOCX, PPTX, PPT, TXT.",
+            )
+        if suffix not in ALLOWED_DOC_EXTENSIONS:
+            suffix = ".txt"
+
+        filename = f"{uuid.uuid4().hex}{suffix}"
+        dest = UPLOADS_DIR / filename
+
+        contents = await file.read()
+        if len(contents) > max_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"File '{file.filename}' is too large. Maximum size is {MAX_DOC_SIZE_MB} MB.",
+            )
+
+        with open(dest, "wb") as f:
+            f.write(contents)
+
+        document_urls.append(f"/uploads/{filename}")
+
+    return {"document_urls": document_urls}
+
+
+@app.get("/stream-test", response_class=HTMLResponse, tags=["Chat"])
+def stream_test_page():
+    """Serve a simple HTML page to verify streaming works (use fetch + getReader, not res.text())."""
+    path = Path(__file__).parent / "stream_test.html"
+    return path.read_text(encoding="utf-8")
+
+
 @app.get("/uploads/{filename}", tags=["Chat"])
 async def get_upload(filename: str):
     """
@@ -480,18 +560,29 @@ async def chat(
     # Always load DB history — used as fallback if the SDK transcript is missing
     history = get_messages(session_id)
 
-    # Serialize image list as JSON string for DB storage (empty list → None)
+    # Serialize image and document lists as JSON for DB storage
     import json as _json
     image_urls_json = _json.dumps(body.image_urls) if body.image_urls else None
+    document_urls_json = _json.dumps(body.document_urls) if body.document_urls else None
 
-    # Save the current user message (with optional images)
-    add_message(session_id, role="user", content=body.message, image_url=image_urls_json)
+    # Save the current user message (with optional images and documents)
+    add_message(
+        session_id, role="user", content=body.message,
+        image_url=image_urls_json, document_url=document_urls_json,
+    )
 
     # Run the agent — tries native resume first, falls back to DB history if needed
     loop = asyncio.get_event_loop()
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
         reply, new_claude_session_id = await loop.run_in_executor(
-            pool, _run_agent_in_thread, body.message, user_id, claude_session_id, history, body.image_urls
+            pool,
+            _run_agent_in_thread,
+            body.message,
+            user_id,
+            claude_session_id,
+            history,
+            body.image_urls or [],
+            body.document_urls or [],
         )
 
     # Save the assistant reply
@@ -501,7 +592,104 @@ async def chat(
     if new_claude_session_id:
         save_claude_session_id(session_id, new_claude_session_id)
 
-    return ChatResponse(reply=reply, user=current_user["username"], session_id=session_id, image_urls=body.image_urls)
+    return ChatResponse(
+        reply=reply,
+        user=current_user["username"],
+        session_id=session_id,
+        image_urls=body.image_urls,
+        document_urls=body.document_urls,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chat streaming endpoint (SSE)
+# ---------------------------------------------------------------------------
+
+@app.post("/chat/stream", tags=["Chat"])
+async def chat_stream(
+    body: ChatRequest,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """
+    Stream chat responses via Server-Sent Events.
+    Same request body as /chat. Events: text (chunk), tool_start, tool_end, done.
+    """
+    user_id = int(current_user["sub"])
+
+    if body.session_id is not None:
+        session = get_session(body.session_id, user_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+    else:
+        title = body.message[:60] + ("…" if len(body.message) > 60 else "")
+        session = create_session(user_id=user_id, title=title)
+
+    session_id = session["id"]
+    claude_session_id: str | None = session.get("claude_session_id")
+    history = get_messages(session_id)
+
+    import json as _json
+    image_urls_json = _json.dumps(body.image_urls) if body.image_urls else None
+    document_urls_json = _json.dumps(body.document_urls) if body.document_urls else None
+    add_message(
+        session_id, role="user", content=body.message,
+        image_url=image_urls_json, document_url=document_urls_json,
+    )
+
+    queue: Queue = Queue()
+
+    def run_streaming_agent():
+        _run_agent_streaming_in_thread(
+            queue=queue,
+            session_id=session_id,
+            user_message=body.message,
+            user_id=user_id,
+            claude_session_id=claude_session_id,
+            history=history,
+            image_urls=body.image_urls or [],
+            document_urls=body.document_urls or [],
+        )
+
+    thread = threading.Thread(target=run_streaming_agent)
+    thread.start()
+
+    def _sse_event(event_type: str, data: dict) -> bytes:
+        """Format SSE event as bytes for immediate flush."""
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+
+    def event_generator():
+        """Sync generator — yields bytes for unbuffered streaming."""
+        try:
+            while True:
+                item = queue.get()
+                event_type = item.get("type")
+                if event_type == "done":
+                    yield _sse_event("done", {
+                        "reply": item["reply"],
+                        "session_id": session_id,
+                        "user": current_user["username"],
+                        "image_urls": body.image_urls or [],
+                        "document_urls": body.document_urls or [],
+                    })
+                    break
+                elif event_type == "text":
+                    yield _sse_event("text", {"content": item["content"]})
+                elif event_type == "tool_start":
+                    yield _sse_event("tool_start", {"tool": item["tool"]})
+                elif event_type == "tool_end":
+                    yield _sse_event("tool_end", {"tool": item["tool"]})
+        finally:
+            thread.join(timeout=1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +702,7 @@ def _run_agent_in_thread(
     claude_session_id: str | None,
     history: list[dict],
     image_urls: list[str] | None = None,
+    document_urls: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Runs in a worker thread. Creates a fresh ProactorEventLoop (Windows-safe)
@@ -527,11 +716,69 @@ def _run_agent_in_thread(
     try:
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(
-            _run_agent(user_message, user_id, claude_session_id, history, image_urls or [])
+            _run_agent(
+                user_message, user_id, claude_session_id, history,
+                image_urls or [], document_urls or [],
+            )
         )
     finally:
         loop.close()
         asyncio.set_event_loop(None)
+
+
+def _run_agent_streaming_in_thread(
+    queue: Queue,
+    session_id: int,
+    user_message: str,
+    user_id: int,
+    claude_session_id: str | None,
+    history: list[dict],
+    image_urls: list[str],
+    document_urls: list[str] | None = None,
+) -> None:
+    """
+    Runs in a worker thread. Streams agent output via queue.
+    Puts: {"type": "text", "content": str}, {"type": "tool_start", "tool": str},
+    {"type": "tool_end", "tool": str}, {"type": "done", "reply": str, ...}.
+    """
+    if sys.platform == "win32":
+        loop = asyncio.ProactorEventLoop()
+    else:
+        loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            _run_agent_streaming(
+                queue, session_id, user_message, user_id, claude_session_id, history,
+                image_urls, document_urls or [],
+            )
+        )
+    finally:
+        loop.close()
+        asyncio.set_event_loop(None)
+
+
+def _extract_document_texts(document_urls: list[str]) -> str:
+    """Extract text from uploaded documents and return formatted string for agent context."""
+    if not document_urls:
+        return ""
+    from document_parser import extract_text_from_file
+
+    parts: list[str] = []
+    for url in document_urls:
+        fname = url.lstrip("/").replace("uploads/", "", 1)
+        path = UPLOADS_DIR / fname
+        if not path.exists():
+            parts.append(f"[Document {fname}: file not found]")
+            continue
+        try:
+            text = extract_text_from_file(path)
+            if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+                text = text[:MAX_EXTRACTED_TEXT_CHARS] + "\n\n[... truncated ...]"
+            parts.append(f"--- Content of {fname} ---\n{text}")
+        except Exception as e:
+            parts.append(f"[Document {fname}: error extracting text — {e}]")
+    return "\n\n".join(parts)
 
 
 def _build_context_from_db(history: list[dict], current_message: str) -> str:
@@ -542,6 +789,8 @@ def _build_context_from_db(history: list[dict], current_message: str) -> str:
     if not history:
         return current_message
 
+    import json as _json
+
     lines = [
         "[CONVERSATION HISTORY — use this to recall all prior context]",
         "",
@@ -550,7 +799,6 @@ def _build_context_from_db(history: list[dict], current_message: str) -> str:
         role_label = "User" if msg["role"] == "user" else "Assistant"
         line = f"{role_label}: {msg['content']}"
         if msg.get("image_url"):
-            import json as _json
             try:
                 urls = _json.loads(msg["image_url"])
             except (ValueError, TypeError):
@@ -558,6 +806,14 @@ def _build_context_from_db(history: list[dict], current_message: str) -> str:
             for url in urls:
                 fname = url.lstrip("/").replace("uploads/", "", 1)
                 line += f" [attached image: uploads/{fname}]"
+        if msg.get("document_url"):
+            try:
+                urls = _json.loads(msg["document_url"])
+            except (ValueError, TypeError):
+                urls = [msg["document_url"]]
+            for url in urls:
+                fname = url.lstrip("/").replace("uploads/", "", 1)
+                line += f" [attached document: uploads/{fname}]"
         lines.append(line)
 
     lines += [
@@ -574,6 +830,7 @@ async def _run_agent(
     claude_session_id: str | None,
     history: list[dict],
     image_urls: list[str] | None = None,
+    document_urls: list[str] | None = None,
 ) -> tuple[str, str | None]:
     """
     Async agent runner — must be called inside a ProactorEventLoop on Windows.
@@ -588,11 +845,11 @@ async def _run_agent(
 
     Returns (reply_text, new_claude_session_id).
     """
-    import os
     from pathlib import Path
 
     sys.path.insert(0, str(Path(__file__).parent))
 
+    from agent_config import make_agent_options
     from claude_agent_sdk import (
         AssistantMessage,
         ClaudeAgentOptions,
@@ -600,73 +857,12 @@ async def _run_agent(
         ResultMessage,
         TextBlock,
     )
-    from gmail_tools import gmail_tools_server
-    from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
-    from sub_agent import (
-        data_processor_agent,
-        email_drafter_agent,
-        gmail_agent,
-        sheets_agent,
-    )
-    from tools import my_tools_server
 
     agent_cwd = Path(__file__).parent / "cwd"
     agent_cwd.mkdir(exist_ok=True)
 
-    def _build_cli_env() -> dict[str, str]:
-        env: dict[str, str] = {}
-        if os.environ.get("USE_BEDROCK", "").strip() == "1":
-            env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-            env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
-        return env
-
     def _make_options(resume_id: str | None) -> ClaudeAgentOptions:
-        return ClaudeAgentOptions(
-            mcp_servers={
-                "my_tools": my_tools_server,
-                "gmail_tools": gmail_tools_server,
-                "sheets_data": sheets_data_server,
-                "sheets_format": sheets_format_server,
-                "sheets_visual": sheets_visual_server,
-            },
-            agents={
-                "data_processor": data_processor_agent,
-                "email_drafter": email_drafter_agent,
-                "gmail_agent": gmail_agent,
-                "sheets_agent": sheets_agent,
-            },
-            tools=["Skill", "Task", "Bash", "Read", "Write"],
-            allowed_tools=["Skill", "Task", "Bash", "Read", "Write"],
-            setting_sources=["project"],
-            system_prompt=(
-                f"You are working in a restricted directory. Always use RELATIVE paths. "
-                f"Your working directory is: {agent_cwd}. "
-                f"The current user's ID is: {user_id}. "
-
-                "\n\n=== RESPONSE FORMATTING RULES (follow strictly) ===\n"
-                "- Use Markdown to make responses readable and scannable.\n"
-                "- Use **bold** for key terms, headings, and important points.\n"
-                "- Use *italics* for subtle emphasis where helpful.\n"
-                "- Use bullet lists (- or *) for options, steps, or multiple items.\n"
-                "- Use numbered lists (1. 2. 3.) for ordered steps or procedures.\n"
-                "- Use markdown tables when presenting structured data (columns/rows).\n"
-                "- Use emojis sparingly (1–3 per response) for clarity — e.g. ✅ 📋 📊 — not in every sentence.\n"
-                "- Keep responses concise and friendly. Avoid walls of text.\n"
-
-                "\n=== DELEGATION RULES (always use Task tool, never handle yourself) ===\n"
-                "- Mock data / file processing → delegate to 'data_processor' subagent\n"
-                "- Drafting emails (no Gmail account needed) → delegate to 'email_drafter' subagent\n"
-                f"- ANY Gmail task (read, search, send, reply, trash, labels, profile, etc.) → "
-                f"delegate to 'gmail_agent' subagent. Always include 'user_id={user_id}' in the task prompt.\n"
-                f"- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
-                f"conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
-                f"delegate to 'sheets_agent' subagent. Always include 'user_id={user_id}' in the task prompt."
-            ),
-            permission_mode="bypassPermissions",
-            cwd=str(agent_cwd),
-            env=_build_cli_env(),
-            resume=resume_id,
-        )
+        return make_agent_options(agent_cwd=agent_cwd, user_id=user_id, resume_id=resume_id)
 
     async def _execute(options: ClaudeAgentOptions, msg: str) -> tuple[str, str | None]:
         text_chunks: list[str] = []
@@ -686,7 +882,7 @@ async def _run_agent(
         # Return raw markdown so frontend can render bold, lists, tables, etc.
         return raw, new_sid
 
-    # If the user attached images, append a note so the agent reads them
+    # Build effective message: user text + image note + extracted document text
     effective_message = user_message
     if image_urls:
         paths = ", ".join(
@@ -696,11 +892,19 @@ async def _run_agent(
         count = len(image_urls)
         label = "image" if count == 1 else f"{count} images"
         effective_message = (
-            f"{user_message}\n\n"
+            f"{effective_message}\n\n"
             f"[The user has attached {label}. Use the Read tool to view "
             f"{'it' if count == 1 else 'each one'} at the relative "
             f"{'path' if count == 1 else 'paths'}: {paths}]"
         )
+    if document_urls:
+        doc_text = _extract_document_texts(document_urls)
+        if doc_text:
+            effective_message = (
+                f"{effective_message}\n\n"
+                "[The user has attached the following document(s). The extracted text is below.]\n\n"
+                f"{doc_text}"
+            )
 
     # ── PRIMARY: native SDK session resumption ──────────────────────────────
     if claude_session_id:
@@ -716,3 +920,134 @@ async def _run_agent(
     # ── FALLBACK: rebuild full context from DB messages (no cap) ────────────
     full_message = _build_context_from_db(history, effective_message)
     return await _execute(_make_options(None), full_message)
+
+
+async def _run_agent_streaming(
+    queue: Queue,
+    session_id: int,
+    user_message: str,
+    user_id: int,
+    claude_session_id: str | None,
+    history: list[dict],
+    image_urls: list[str],
+    document_urls: list[str] | None = None,
+) -> None:
+    """
+    Async streaming agent runner. Puts text/tool/done events into queue.
+    """
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent))
+
+    from agent_config import make_agent_options
+    from claude_agent_sdk import (
+        AssistantMessage,
+        ClaudeAgentOptions,
+        ClaudeSDKClient,
+        ResultMessage,
+        TextBlock,
+    )
+    from claude_agent_sdk.types import StreamEvent
+
+    agent_cwd = Path(__file__).parent / "cwd"
+    agent_cwd.mkdir(exist_ok=True)
+
+    def _make_options(resume_id: str | None) -> ClaudeAgentOptions:
+        return make_agent_options(
+            agent_cwd=agent_cwd,
+            user_id=user_id,
+            resume_id=resume_id,
+            include_partial_messages=True,
+        )
+
+    effective_message = user_message
+    if image_urls:
+        paths = ", ".join(
+            f"uploads/{url.lstrip('/').replace('uploads/', '', 1)}"
+            for url in image_urls
+        )
+        count = len(image_urls)
+        label = "image" if count == 1 else f"{count} images"
+        effective_message = (
+            f"{effective_message}\n\n"
+            f"[The user has attached {label}. Use the Read tool to view "
+            f"{'it' if count == 1 else 'each one'} at the relative "
+            f"{'path' if count == 1 else 'paths'}: {paths}]"
+        )
+    if document_urls:
+        doc_text = _extract_document_texts(document_urls)
+        if doc_text:
+            effective_message = (
+                f"{effective_message}\n\n"
+                "[The user has attached the following document(s). The extracted text is below.]\n\n"
+                f"{doc_text}"
+            )
+
+    async def _execute_streaming(opts: ClaudeAgentOptions, msg: str) -> None:
+        assistant_texts: list[str] = []  # Complete text from AssistantMessage (final reply)
+        sid: str | None = None
+        in_tool = False
+        current_tool: str | None = None
+
+        async with ClaudeSDKClient(options=opts) as client:
+            await client.query(msg)
+            async for message in client.receive_response():
+                if isinstance(message, StreamEvent):
+                    event = message.event
+                    event_type = event.get("type")
+
+                    if event_type == "content_block_start":
+                        content_block = event.get("content_block", {})
+                        if content_block.get("type") == "tool_use":
+                            current_tool = content_block.get("name", "Tool")
+                            in_tool = True
+                            queue.put({"type": "tool_start", "tool": current_tool})
+
+                    elif event_type == "content_block_delta":
+                        delta = event.get("delta", {})
+                        if delta.get("type") == "text_delta" and not in_tool:
+                            chunk = delta.get("text", "")
+                            if chunk:
+                                queue.put({"type": "text", "content": chunk})
+
+                    elif event_type == "content_block_stop":
+                        if in_tool and current_tool:
+                            queue.put({"type": "tool_end", "tool": current_tool})
+                            in_tool = False
+                            current_tool = None
+
+                elif isinstance(message, AssistantMessage):
+                    for block in message.content:
+                        if isinstance(block, TextBlock) and block.text:
+                            assistant_texts.append(block.text)
+                elif isinstance(message, ResultMessage):
+                    sid = message.session_id
+
+        raw = "\n".join(assistant_texts) if assistant_texts else "(no response)"
+        raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+
+        add_message(session_id, role="assistant", content=raw)
+        if sid:
+            save_claude_session_id(session_id, sid)
+
+        queue.put({
+            "type": "done",
+            "reply": raw,
+            "session_id": session_id,
+            "new_claude_session_id": sid,
+        })
+
+    if claude_session_id:
+        try:
+            await _execute_streaming(_make_options(claude_session_id), effective_message)
+        except Exception as primary_err:
+            print(
+                f"\n[Memory] SDK resume failed for session '{claude_session_id}': "
+                f"{primary_err}\n"
+                f"[Memory] Falling back to full DB history reconstruction.\n"
+            )
+            full_message = _build_context_from_db(history, effective_message)
+            await _execute_streaming(_make_options(None), full_message)
+    else:
+        full_message = _build_context_from_db(history, effective_message)
+        await _execute_streaming(_make_options(None), full_message)

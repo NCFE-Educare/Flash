@@ -28,6 +28,13 @@ def init_db() -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists — nothing to do
 
+        # Migrate existing databases that predate the document_url column
+        try:
+            conn.execute("ALTER TABLE messages ADD COLUMN document_url TEXT")
+            conn.commit()
+        except sqlite3.OperationalError:
+            pass  # Column already exists — nothing to do
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -47,12 +54,13 @@ def init_db() -> None:
             );
 
             CREATE TABLE IF NOT EXISTS messages (
-                id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-                role        TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
-                content     TEXT NOT NULL,
-                image_url   TEXT,
-                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id   INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                role         TEXT NOT NULL CHECK(role IN ('user', 'assistant')),
+                content      TEXT NOT NULL,
+                image_url    TEXT,
+                document_url TEXT,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
 
             CREATE TABLE IF NOT EXISTS gmail_tokens (
@@ -208,11 +216,17 @@ def _touch_session(conn, session_id: int) -> None:
 # Messages
 # ---------------------------------------------------------------------------
 
-def add_message(session_id: int, role: str, content: str, image_url: str | None = None) -> dict:
+def add_message(
+    session_id: int,
+    role: str,
+    content: str,
+    image_url: str | None = None,
+    document_url: str | None = None,
+) -> dict:
     with _get_conn() as conn:
         cur = conn.execute(
-            "INSERT INTO messages (session_id, role, content, image_url) VALUES (?, ?, ?, ?)",
-            (session_id, role, content, image_url),
+            "INSERT INTO messages (session_id, role, content, image_url, document_url) VALUES (?, ?, ?, ?, ?)",
+            (session_id, role, content, image_url, document_url),
         )
         _touch_session(conn, session_id)
         conn.commit()
