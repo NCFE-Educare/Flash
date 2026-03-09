@@ -199,91 +199,35 @@ sheets_agent = AgentDefinition(
         "Use this agent for ANY Google Sheets task: creating spreadsheets, reading/writing data, "
         "formatting cells (colors, fonts, borders), freezing rows, resizing columns, creating charts, "
         "conditional formatting, dropdowns, sparklines, managing worksheet tabs, sorting, etc. "
+        "You MUST delegate to sheets_data_agent, sheets_format_agent, or sheets_visual_agent — never use tools directly. "
         "Always include user_id in your task prompt."
     ),
     prompt=(
-        "You are a complete Google Sheets assistant with full access to data, formatting, and visual tools. "
-        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call without exception.\n\n"
+        "You are a Google Sheets orchestrator. You do NOT have direct tools. "
+        "You MUST use the Task tool to delegate to your sub-agents:\n\n"
+
+        "- **sheets_data_agent**: For creating spreadsheets, listing, reading/writing/clearing cells, "
+        "managing worksheets (add, delete, rename, duplicate), sorting, find-and-replace. "
+        "Include user_id and spreadsheet_id (when known) in the task prompt.\n\n"
+
+        "- **sheets_format_agent**: For formatting: colors, fonts, borders, merge, freeze, resize, "
+        "number format, alignment. Ranges must NOT include sheet name (e.g. 'A1:D10'). "
+        "Include user_id, spreadsheet_id, sheet_name, and range in the task prompt.\n\n"
+
+        "- **sheets_visual_agent**: For charts, conditional formatting, data validation (dropdowns), "
+        "sparklines. Chart data_range MUST include sheet name (e.g. 'Sheet1!A1:C10'). "
+        "Include user_id, spreadsheet_id, and relevant sheet/range info in the task prompt.\n\n"
 
         "=== EXECUTION ORDER FOR COMPLEX TASKS ===\n"
-        "1. DATA FIRST: create spreadsheet / write data / manage worksheets\n"
-        "2. FORMAT SECOND: colors, fonts, borders, freeze, resize\n"
-        "3. VISUALS LAST: charts, conditional formatting, dropdowns, sparklines\n\n"
+        "1. Delegate to sheets_data_agent FIRST: create spreadsheet / write data / manage worksheets\n"
+        "2. Delegate to sheets_format_agent SECOND: colors, fonts, borders, freeze, resize\n"
+        "3. Delegate to sheets_visual_agent LAST: charts, conditional formatting, dropdowns, sparklines\n\n"
 
-        "=== RANGE NOTATION RULES (critical) ===\n"
-        "- read_sheet, write_sheet, append_rows, clear_range, sort_range: range MUST include sheet name, e.g. 'Sheet1!A1:D10'\n"
-        "- format_cells, set_borders, merge_cells, freeze_rows_columns, align_cells, set_number_format: range must NOT include sheet name, e.g. 'A1:D10'\n"
-        "- create_chart data_range: MUST include sheet name, e.g. 'Sheet1!A1:C10'\n"
-        "- add_conditional_formatting, add_data_validation: range must NOT include sheet name\n\n"
-
-        "=== DATA TOOLS ===\n"
-        "- create_spreadsheet: create a new spreadsheet (returns spreadsheet_id, sheet_id, URL — save these!)\n"
-        "- list_spreadsheets: list user's spreadsheets in Drive\n"
-        "- get_spreadsheet_info: get worksheet names and sheetIds (use before formatting/charting)\n"
-        "- read_sheet: read values from a range\n"
-        "- write_sheet: write a 2D array to a range. values MUST be a valid JSON string like "
-        "'[[\"Header1\",\"Header2\"],[\"val1\",\"val2\"]]' — always use double quotes inside the JSON\n"
-        "- append_rows: append rows below existing data\n"
-        "- clear_range: clear values from a range\n"
-        "- add_worksheet / delete_worksheet / rename_worksheet / duplicate_worksheet: manage tabs\n"
-        "- sort_range: sort rows by a column\n"
-        "- find_and_replace: find and replace text\n\n"
-
-        "=== FORMAT TOOLS ===\n"
-        "- format_cells: background_color and text_color as hex e.g. '#4285F4'. bold/italic as true/false\n"
-        "- set_borders: sides can be 'all', 'outer', 'inner', or comma-separated e.g. 'top,bottom'\n"
-        "- merge_cells / unmerge_cells: merge a range\n"
-        "- freeze_rows_columns: frozen_rows=1 freezes the header row\n"
-        "- set_column_width / set_row_height / auto_resize_columns: resize dimensions\n"
-        "- set_number_format: format_type can be 'currency', 'percent', 'date', 'number', 'text'\n"
-        "- align_cells: horizontal='CENTER'/'LEFT'/'RIGHT', vertical='TOP'/'MIDDLE'/'BOTTOM'\n\n"
-
-        "=== VISUAL TOOLS ===\n"
-        "- create_chart: chart_type = BAR, COLUMN, LINE, AREA, PIE, SCATTER, or COMBO\n"
-        "- list_charts / delete_chart: manage existing charts\n"
-        "- add_conditional_formatting: rule_type = 'gradient' (color scale) or 'single_color' (highlight rule)\n"
-        "- add_data_validation: validation_type = 'dropdown_list', 'checkbox', 'number_range', 'text_contains'\n"
-        "- add_sparklines: sparkline_type = LINE, BAR, COLUMN, or WINLOSS\n\n"
-
-        "Always verify each step actually succeeded before moving to the next. "
+        "For multi-step tasks, delegate in order. Pass spreadsheet_id and sheet names from earlier results "
+        "to the next delegation. Always include user_id in every delegation. "
         "Return a complete summary with the spreadsheet URL at the end."
     ),
-    tools=[
-        # Data tools
-        "mcp__sheets_data__create_spreadsheet",
-        "mcp__sheets_data__list_spreadsheets",
-        "mcp__sheets_data__get_spreadsheet_info",
-        "mcp__sheets_data__read_sheet",
-        "mcp__sheets_data__write_sheet",
-        "mcp__sheets_data__append_rows",
-        "mcp__sheets_data__clear_range",
-        "mcp__sheets_data__add_worksheet",
-        "mcp__sheets_data__delete_worksheet",
-        "mcp__sheets_data__rename_worksheet",
-        "mcp__sheets_data__duplicate_worksheet",
-        "mcp__sheets_data__sort_range",
-        "mcp__sheets_data__find_and_replace",
-        # Format tools
-        "mcp__sheets_format__get_spreadsheet_info",
-        "mcp__sheets_format__format_cells",
-        "mcp__sheets_format__set_borders",
-        "mcp__sheets_format__merge_cells",
-        "mcp__sheets_format__unmerge_cells",
-        "mcp__sheets_format__freeze_rows_columns",
-        "mcp__sheets_format__set_column_width",
-        "mcp__sheets_format__set_row_height",
-        "mcp__sheets_format__auto_resize_columns",
-        "mcp__sheets_format__set_number_format",
-        "mcp__sheets_format__align_cells",
-        # Visual tools
-        "mcp__sheets_visual__get_spreadsheet_info",
-        "mcp__sheets_visual__create_chart",
-        "mcp__sheets_visual__list_charts",
-        "mcp__sheets_visual__delete_chart",
-        "mcp__sheets_visual__add_conditional_formatting",
-        "mcp__sheets_visual__add_data_validation",
-        "mcp__sheets_visual__add_sparklines",
-    ],
+    tools=["Task"],
     model="sonnet",
 )
 
@@ -394,5 +338,105 @@ calendar_agent = AgentDefinition(
         "mcp__calendar__update_event",
         "mcp__calendar__delete_event",
     ],
+    model="haiku",
+)
+
+
+# ---------------------------------------------------------------------------
+# Google Slides agents
+# ---------------------------------------------------------------------------
+
+slides_data_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Slides DATA operations: creating presentations, "
+        "listing presentations, getting presentation structure, adding slides, "
+        "inserting text, replacing text, creating text boxes. "
+        "Always include user_id and presentation_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Slides data assistant. You handle all content and structure operations. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call. "
+        "Available tools:\n"
+        "- create_presentation: create a new presentation (returns presentation_id, url, title)\n"
+        "- list_presentations: list user's presentations from Drive\n"
+        "- get_presentation: get full presentation structure (slides, shapes, objectIds)\n"
+        "- get_presentation_info: get simplified slide IDs and shape objectIds for formatting\n"
+        "- add_slide: add a new slide (returns slide_object_id)\n"
+        "- insert_text: insert text into a shape at index (need object_id from get_presentation)\n"
+        "- replace_all_text: replace text across the presentation\n"
+        "- create_text_box: create a text box on a slide (need slide_object_id)\n"
+        "Use get_presentation or get_presentation_info to find objectIds before inserting text or formatting. "
+        "Always return the presentation_id and URL in your response."
+    ),
+    tools=[
+        "mcp__slides_data__create_presentation",
+        "mcp__slides_data__list_presentations",
+        "mcp__slides_data__get_presentation",
+        "mcp__slides_data__get_presentation_info",
+        "mcp__slides_data__add_slide",
+        "mcp__slides_data__insert_text",
+        "mcp__slides_data__replace_all_text",
+        "mcp__slides_data__create_text_box",
+    ],
+    model="haiku",
+)
+
+slides_format_agent = AgentDefinition(
+    description=(
+        "Use this agent for Google Slides FORMATTING operations: text style (bold, italic, "
+        "font, size, color), paragraph bullets, paragraph alignment. "
+        "Always include user_id, presentation_id, and object_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Slides formatting assistant. You make presentations look professional. "
+        "The task prompt will always include the user_id — extract it and pass it to EVERY tool call. "
+        "Use get_presentation_info first to find shape objectIds before formatting. "
+        "Available tools:\n"
+        "- get_presentation_info: get slide IDs and shape objectIds\n"
+        "- update_text_style: bold, italic, font_family, font_size_pt, foreground_color_hex, link_url. "
+        "text_range_type: 'ALL' for entire shape, or 'FIXED_RANGE' with start_index/end_index\n"
+        "- create_paragraph_bullets: add bullets (bullet_preset: BULLET_DISC_CIRCLE_SQUARE, etc.)\n"
+        "- delete_paragraph_bullets: remove bullets\n"
+        "- update_paragraph_style: alignment (START, CENTER, END, JUSTIFIED)\n"
+        "Colors: use hex format e.g. '#4285F4'. Always confirm each operation succeeded."
+    ),
+    tools=[
+        "mcp__slides_format__get_presentation_info",
+        "mcp__slides_format__update_text_style",
+        "mcp__slides_format__create_paragraph_bullets",
+        "mcp__slides_format__delete_paragraph_bullets",
+        "mcp__slides_format__update_paragraph_style",
+    ],
+    model="haiku",
+)
+
+slides_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Slides task: creating presentations, adding slides, "
+        "inserting text, formatting (bold, fonts, colors, bullets, alignment), creating text boxes. "
+        "You MUST delegate to slides_data_agent or slides_format_agent — never use tools directly. "
+        "Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Slides orchestrator. You do NOT have direct tools. "
+        "You MUST use the Task tool to delegate to your sub-agents:\n\n"
+
+        "- **slides_data_agent**: For creating presentations, listing, adding slides, inserting text, "
+        "replace_all_text, creating text boxes, getting presentation structure. "
+        "Include user_id and presentation_id (when known) in the task prompt.\n\n"
+
+        "- **slides_format_agent**: For text formatting (bold, italic, font, size, color), "
+        "paragraph bullets, paragraph alignment. Include user_id, presentation_id, and object_id in the task prompt.\n\n"
+
+        "=== EXECUTION ORDER FOR COMPLEX TASKS ===\n"
+        "1. Delegate to slides_data_agent FIRST: create presentation / add slides / insert text / create text boxes\n"
+        "2. Delegate to slides_format_agent SECOND: apply text style, bullets, alignment\n\n"
+
+        "For multi-step tasks (e.g. create presentation and format it), delegate to slides_data_agent first, "
+        "then delegate to slides_format_agent with the presentation_id and objectIds from the first result.\n\n"
+
+        "Always include user_id in every delegation. Return a clear summary with the presentation URL at the end."
+    ),
+    tools=["Task"],
     model="haiku",
 )

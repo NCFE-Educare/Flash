@@ -42,7 +42,8 @@ def make_agent_options(
     from drive_tools import drive_server
     from gmail_tools import gmail_tools_server
     from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
-    from sub_agent import calendar_agent, data_processor_agent, docs_agent, drive_agent, email_drafter_agent, gmail_agent, sheets_agent
+    from slides_tools import slides_data_server, slides_format_server
+    from sub_agent import calendar_agent, data_processor_agent, docs_agent, drive_agent, email_drafter_agent, gmail_agent, sheets_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
     from tools import my_tools_server
 
     uid = str(user_id) if user_id is not None else None
@@ -70,6 +71,10 @@ def make_agent_options(
             f"- ANY Google Calendar task (list events, create event, update, delete, list calendars) → "
             f"delegate to 'calendar_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
         )
+        slides_rule = (
+            f"- ANY Google Slides task (create presentation, add slides, insert text, formatting, bullets, etc.) → "
+            f"delegate to 'slides_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
+        )
     else:
         user_context = (
             "NOTE: No logged-in user — ask the user to provide their user_id before "
@@ -95,6 +100,10 @@ def make_agent_options(
         calendar_rule = (
             "- ANY Google Calendar task (list events, create event, update, delete, list calendars) → "
             "delegate to 'calendar_agent' subagent. Always include the user_id in the task prompt.\n"
+        )
+        slides_rule = (
+            "- ANY Google Slides task (create presentation, add slides, insert text, formatting, bullets, etc.) → "
+            "delegate to 'slides_agent' subagent. Always include the user_id in the task prompt.\n"
         )
 
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -133,6 +142,7 @@ def make_agent_options(
         + docs_rule
         + drive_rule
         + calendar_rule
+        + slides_rule
     )
 
     base_tools = ["Skill", "Task", "Bash", "Read", "Write", "WebSearch"]
@@ -148,6 +158,8 @@ def make_agent_options(
         "mcp__docs__*",
         "mcp__drive__*",
         "mcp__calendar__*",
+        "mcp__slides_data__*",
+        "mcp__slides_format__*",
     ]
 
     kwargs: dict = dict(
@@ -160,15 +172,23 @@ def make_agent_options(
             "docs": docs_server,
             "drive": drive_server,
             "calendar": calendar_tools_server,
+            "slides_data": slides_data_server,
+            "slides_format": slides_format_server,
         },
         agents={
             "data_processor": data_processor_agent,
             "email_drafter": email_drafter_agent,
             "gmail_agent": gmail_agent,
             "sheets_agent": sheets_agent,
+            "sheets_data_agent": sheets_data_agent,
+            "sheets_format_agent": sheets_format_agent,
+            "sheets_visual_agent": sheets_visual_agent,
             "docs_agent": docs_agent,
             "drive_agent": drive_agent,
             "calendar_agent": calendar_agent,
+            "slides_agent": slides_agent,
+            "slides_data_agent": slides_data_agent,
+            "slides_format_agent": slides_format_agent,
         },
         tools=base_tools,
         allowed_tools=base_tools + mcp_tool_permissions,
