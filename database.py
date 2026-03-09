@@ -98,6 +98,15 @@ def init_db() -> None:
                 google_email  TEXT NOT NULL,
                 connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS calendar_tokens (
+                user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                access_token  TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                token_expiry  TEXT NOT NULL,
+                google_email  TEXT NOT NULL,
+                connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         conn.commit()
 
@@ -429,5 +438,48 @@ def delete_drive_tokens(user_id: int) -> bool:
     """Remove Drive tokens for a user (disconnect Google Drive)."""
     with _get_conn() as conn:
         cur = conn.execute("DELETE FROM drive_tokens WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Calendar Tokens
+# ---------------------------------------------------------------------------
+
+def save_calendar_tokens(
+    user_id: int,
+    access_token: str,
+    refresh_token: str,
+    token_expiry: str,
+    google_email: str,
+) -> None:
+    """Insert or update Google Calendar OAuth tokens for a user (upsert)."""
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO calendar_tokens (user_id, access_token, refresh_token, token_expiry, google_email)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                access_token  = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_expiry  = excluded.token_expiry,
+                google_email  = excluded.google_email,
+                connected_at  = CURRENT_TIMESTAMP
+            """,
+            (user_id, access_token, refresh_token, token_expiry, google_email),
+        )
+        conn.commit()
+
+
+def get_calendar_tokens(user_id: int) -> dict | None:
+    """Return Calendar token dict for a user, or None if not connected."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM calendar_tokens WHERE user_id = ?", (user_id,))
+
+
+def delete_calendar_tokens(user_id: int) -> bool:
+    """Remove Calendar tokens for a user (disconnect Google Calendar)."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM calendar_tokens WHERE user_id = ?", (user_id,))
         conn.commit()
         return cur.rowcount > 0

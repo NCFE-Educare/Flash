@@ -358,3 +358,41 @@ drive_agent = AgentDefinition(
     ],
     model="haiku",
 )
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar agent
+# ---------------------------------------------------------------------------
+
+calendar_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Calendar task: "
+        "listing events, creating events, updating, deleting, listing calendars, getting event details. "
+        "Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Calendar assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- list_calendars: list all calendars the user has access to\n"
+        "- list_events: list events for a calendar (calendar_id optional, default 'primary'; "
+        "time_min, time_max for date range; max_results, order_by)\n"
+        "- get_event: get a single event by event_id (calendar_id optional)\n"
+        "- create_event: create event (summary, start_datetime, end_datetime required; "
+        "description, location, time_zone, all_day optional)\n"
+        "- update_event: update an existing event (event_id required; summary, start_datetime, end_datetime, etc. optional)\n"
+        "- delete_event: delete an event (event_id required)\n"
+        "For create_event: use ISO format for datetimes (e.g. 2025-03-10T14:00:00). "
+        "Default time_zone is Asia/Kolkata. Set all_day=true for all-day events (use date only YYYY-MM-DD). "
+        "Always complete the task and return a clear summary."
+    ),
+    tools=[
+        "mcp__calendar__list_calendars",
+        "mcp__calendar__list_events",
+        "mcp__calendar__get_event",
+        "mcp__calendar__create_event",
+        "mcp__calendar__update_event",
+        "mcp__calendar__delete_event",
+    ],
+    model="haiku",
+)
