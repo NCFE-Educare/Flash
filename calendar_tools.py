@@ -7,6 +7,7 @@ called directly by api.py — they are NOT MCP tools.
 import base64
 import json
 import os
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -325,9 +326,16 @@ async def get_event(args: dict[str, Any]) -> dict[str, Any]:
         "end_datetime: required ISO string. "
         "description: optional. location: optional. "
         "calendar_id: optional (default 'primary'). time_zone: optional (default Asia/Kolkata). "
-        "all_day: optional bool - if true, use date only (YYYY-MM-DD) for start/end."
+        "all_day: optional bool - if true, use date only (YYYY-MM-DD) for start/end. "
+        "add_google_meet: optional bool - if true, automatically generates a Google Meet link and attaches it to the event. "
+        "attendees: optional comma-separated list of email addresses to invite (e.g. 'a@b.com,c@d.com'). "
+        "Google Calendar will send invite emails to all attendees automatically."
     ),
-    {"user_id": int, "summary": str, "start_datetime": str, "end_datetime": str, "description": str, "location": str, "calendar_id": str, "time_zone": str, "all_day": bool},
+    {
+        "user_id": int, "summary": str, "start_datetime": str, "end_datetime": str,
+        "description": str, "location": str, "calendar_id": str, "time_zone": str,
+        "all_day": bool, "add_google_meet": bool, "attendees": str,
+    },
 )
 async def create_event(args: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -340,6 +348,8 @@ async def create_event(args: dict[str, Any]) -> dict[str, Any]:
         calendar_id = str(args.get("calendar_id", "primary"))
         time_zone = str(args.get("time_zone", "Asia/Kolkata"))
         all_day = bool(args.get("all_day", False))
+        add_google_meet = bool(args.get("add_google_meet", False))
+        attendees_raw = args.get("attendees", "") or ""
 
         if not summary:
             return {"content": [{"type": "text", "text": "Error: summary is required."}]}
@@ -361,19 +371,52 @@ async def create_event(args: dict[str, Any]) -> dict[str, Any]:
                 "end": {"dateTime": end_datetime, "timeZone": time_zone},
             }
 
+        # Add attendees if provided
+        attendee_emails = [e.strip() for e in attendees_raw.split(",") if e.strip()]
+        if attendee_emails:
+            event_body["attendees"] = [{"email": e} for e in attendee_emails]
+
+        # Add Google Meet conference link if requested
+        if add_google_meet:
+            event_body["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
+            }
+
         cal = _calendar(user_id)
-        event = cal.events().insert(calendarId=calendar_id, body=event_body).execute()
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "message": "Event created successfully.",
-                    "event_id": event.get("id"),
-                    "htmlLink": event.get("htmlLink"),
-                    "summary": event.get("summary"),
-                }, indent=2),
-            }]
+        # conferenceDataVersion=1 is required to generate Meet links
+        # sendUpdates="all" sends invite emails to all attendees
+        send_updates = "all" if attendee_emails else "none"
+        event = cal.events().insert(
+            calendarId=calendar_id,
+            body=event_body,
+            conferenceDataVersion=1 if add_google_meet else 0,
+            sendUpdates=send_updates,
+        ).execute()
+
+        # Extract Meet link from response if it was created
+        meet_link = None
+        conference = event.get("conferenceData", {})
+        entry_points = conference.get("entryPoints", [])
+        for ep in entry_points:
+            if ep.get("entryPointType") == "video":
+                meet_link = ep.get("uri")
+                break
+
+        result = {
+            "message": "Event created successfully.",
+            "event_id": event.get("id"),
+            "htmlLink": event.get("htmlLink"),
+            "summary": event.get("summary"),
         }
+        if meet_link:
+            result["google_meet_link"] = meet_link
+        if attendee_emails:
+            result["invites_sent_to"] = attendee_emails
+
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error creating event: {e}"}]}
 
@@ -385,9 +428,16 @@ async def create_event(args: dict[str, Any]) -> dict[str, Any]:
         "user_id: required. event_id: required. "
         "summary: optional new title. start_datetime: optional. end_datetime: optional. "
         "description: optional. location: optional. calendar_id: optional (default 'primary'). "
-        "time_zone: optional (default Asia/Kolkata). all_day: optional bool."
+        "time_zone: optional (default Asia/Kolkata). all_day: optional bool. "
+        "add_google_meet: optional bool - if true, generates and attaches a Google Meet link to the event. "
+        "attendees: optional comma-separated email list to add/replace guests (e.g. 'a@b.com,c@d.com'). "
+        "send_updates: optional - 'all' to email all guests (default when attendees given), 'none' to skip emails."
     ),
-    {"user_id": int, "event_id": str, "summary": str, "start_datetime": str, "end_datetime": str, "description": str, "location": str, "calendar_id": str, "time_zone": str, "all_day": bool},
+    {
+        "user_id": int, "event_id": str, "summary": str, "start_datetime": str, "end_datetime": str,
+        "description": str, "location": str, "calendar_id": str, "time_zone": str,
+        "all_day": bool, "add_google_meet": bool, "attendees": str, "send_updates": str,
+    },
 )
 async def update_event(args: dict[str, Any]) -> dict[str, Any]:
     try:
@@ -396,42 +446,81 @@ async def update_event(args: dict[str, Any]) -> dict[str, Any]:
         calendar_id = str(args.get("calendar_id", "primary"))
         time_zone = str(args.get("time_zone", "Asia/Kolkata"))
         all_day = bool(args.get("all_day", False))
+        add_google_meet = bool(args.get("add_google_meet", False))
+        attendees_raw = args.get("attendees", "") or ""
+        send_updates_param = str(args.get("send_updates", "")) or None
 
         cal = _calendar(user_id)
         existing = cal.events().get(calendarId=calendar_id, eventId=event_id).execute()
 
-        updates = {}
         if "summary" in args and args["summary"] is not None:
-            updates["summary"] = str(args["summary"])
+            existing["summary"] = str(args["summary"])
         if "description" in args and args["description"] is not None:
-            updates["description"] = str(args["description"])
+            existing["description"] = str(args["description"])
         if "location" in args and args["location"] is not None:
-            updates["location"] = str(args["location"])
+            existing["location"] = str(args["location"])
         if "start_datetime" in args and args["start_datetime"]:
             if all_day:
-                updates["start"] = {"date": str(args["start_datetime"])[:10]}
+                existing["start"] = {"date": str(args["start_datetime"])[:10]}
             else:
-                updates["start"] = {"dateTime": str(args["start_datetime"]), "timeZone": time_zone}
+                existing["start"] = {"dateTime": str(args["start_datetime"]), "timeZone": time_zone}
         if "end_datetime" in args and args["end_datetime"]:
             if all_day:
-                updates["end"] = {"date": str(args["end_datetime"])[:10]}
+                existing["end"] = {"date": str(args["end_datetime"])[:10]}
             else:
-                updates["end"] = {"dateTime": str(args["end_datetime"]), "timeZone": time_zone}
+                existing["end"] = {"dateTime": str(args["end_datetime"]), "timeZone": time_zone}
 
-        for k, v in updates.items():
-            existing[k] = v
+        # Add/replace attendees
+        attendee_emails = [e.strip() for e in attendees_raw.split(",") if e.strip()]
+        if attendee_emails:
+            existing_attendees = existing.get("attendees", []) or []
+            existing_emails = {a.get("email", "") for a in existing_attendees}
+            for email in attendee_emails:
+                if email not in existing_emails:
+                    existing_attendees.append({"email": email})
+            existing["attendees"] = existing_attendees
 
-        event = cal.events().update(calendarId=calendar_id, eventId=event_id, body=existing).execute()
-        return {
-            "content": [{
-                "type": "text",
-                "text": json.dumps({
-                    "message": "Event updated successfully.",
-                    "event_id": event.get("id"),
-                    "htmlLink": event.get("htmlLink"),
-                }, indent=2),
-                }]
+        # Add Google Meet conference link if requested and not already present
+        if add_google_meet and not existing.get("conferenceData"):
+            existing["conferenceData"] = {
+                "createRequest": {
+                    "requestId": uuid.uuid4().hex,
+                    "conferenceSolutionKey": {"type": "hangoutsMeet"},
+                }
             }
+
+        # Determine send_updates
+        if send_updates_param in ("all", "externalOnly", "none"):
+            send_updates = send_updates_param
+        else:
+            send_updates = "all" if attendee_emails else "none"
+
+        event = cal.events().update(
+            calendarId=calendar_id,
+            eventId=event_id,
+            body=existing,
+            conferenceDataVersion=1 if add_google_meet else 0,
+            sendUpdates=send_updates,
+        ).execute()
+
+        # Extract Meet link
+        meet_link = None
+        for ep in (event.get("conferenceData", {}) or {}).get("entryPoints", []):
+            if ep.get("entryPointType") == "video":
+                meet_link = ep.get("uri")
+                break
+
+        result = {
+            "message": "Event updated successfully.",
+            "event_id": event.get("id"),
+            "htmlLink": event.get("htmlLink"),
+        }
+        if meet_link:
+            result["google_meet_link"] = meet_link
+        if attendee_emails:
+            result["invites_sent_to"] = attendee_emails
+
+        return {"content": [{"type": "text", "text": json.dumps(result, indent=2)}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error updating event: {e}"}]}
 

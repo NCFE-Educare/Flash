@@ -41,10 +41,11 @@ def make_agent_options(
     from docs_tools import docs_server
     from drive_tools import drive_server
     from gmail_tools import gmail_tools_server
+    from meet_tools import meet_tools_server
     from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
     from forms_tools import forms_server
     from slides_tools import slides_data_server, slides_format_server
-    from sub_agent import calendar_agent, docs_agent, drive_agent, forms_agent, gmail_agent, sheets_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
+    from sub_agent import calendar_agent, docs_agent, drive_agent, forms_agent, gmail_agent, meet_agent, sheets_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
     from tools import my_tools_server
 
     uid = str(user_id) if user_id is not None else None
@@ -71,6 +72,10 @@ def make_agent_options(
         calendar_rule = (
             f"- ANY Google Calendar task (list events, create event, update, delete, list calendars) → "
             f"delegate to 'calendar_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
+        )
+        meet_rule = (
+            f"- ANY Google Meet task (create meeting link, create Meet space, get Meet details) → "
+            f"delegate to 'meet_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
         )
         slides_rule = (
             f"- ANY Google Slides task (create presentation, add slides, insert text, formatting, bullets, etc.) → "
@@ -105,6 +110,10 @@ def make_agent_options(
         calendar_rule = (
             "- ANY Google Calendar task (list events, create event, update, delete, list calendars) → "
             "delegate to 'calendar_agent' subagent. Always include the user_id in the task prompt.\n"
+        )
+        meet_rule = (
+            "- ANY Google Meet task (create meeting link, create Meet space, get Meet details) → "
+            "delegate to 'meet_agent' subagent. Always include the user_id in the task prompt.\n"
         )
         slides_rule = (
             "- ANY Google Slides task (create presentation, add slides, insert text, formatting, bullets, etc.) → "
@@ -151,6 +160,7 @@ def make_agent_options(
         + docs_rule
         + drive_rule
         + calendar_rule
+        + meet_rule
         + slides_rule
     )
 
@@ -167,6 +177,7 @@ def make_agent_options(
         "mcp__docs__*",
         "mcp__drive__*",
         "mcp__calendar__*",
+        "mcp__meet__*",
         "mcp__slides_data__*",
         "mcp__slides_format__*",
         "mcp__forms__*",
@@ -182,6 +193,7 @@ def make_agent_options(
             "docs": docs_server,
             "drive": drive_server,
             "calendar": calendar_tools_server,
+            "meet": meet_tools_server,
             "slides_data": slides_data_server,
             "slides_format": slides_format_server,
             "forms": forms_server,
@@ -195,6 +207,7 @@ def make_agent_options(
             "docs_agent": docs_agent,
             "drive_agent": drive_agent,
             "calendar_agent": calendar_agent,
+            "meet_agent": meet_agent,
             "slides_agent": slides_agent,
             "slides_data_agent": slides_data_agent,
             "slides_format_agent": slides_format_agent,

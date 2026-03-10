@@ -292,6 +292,39 @@ drive_agent = AgentDefinition(
 # Google Calendar agent
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Google Meet agent
+# ---------------------------------------------------------------------------
+
+meet_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Meet task: "
+        "creating meeting spaces (instant Meet links), getting space details, "
+        "or checking Meet connection status. Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Meet assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- create_meet_space: create a new Google Meet meeting space — returns meeting URI (join link) and meeting code. "
+        "Use this when the user wants to schedule a meeting, create a Meet link, or start a video call.\n"
+        "- get_meet_space: get details of a Meet space by space name or meeting code\n"
+        "- get_meet_profile: check which Google account is connected for Meet\n"
+        "Always return the meeting link (meeting_uri) prominently so the user can share it."
+    ),
+    tools=[
+        "mcp__meet__create_meet_space",
+        "mcp__meet__get_meet_space",
+        "mcp__meet__get_meet_profile",
+    ],
+    model="haiku",
+)
+
+
+# ---------------------------------------------------------------------------
+# Google Calendar agent
+# ---------------------------------------------------------------------------
+
 calendar_agent = AgentDefinition(
     description=(
         "Use this agent for ANY Google Calendar task: "
@@ -307,12 +340,24 @@ calendar_agent = AgentDefinition(
         "time_min, time_max for date range; max_results, order_by)\n"
         "- get_event: get a single event by event_id (calendar_id optional)\n"
         "- create_event: create event (summary, start_datetime, end_datetime required; "
-        "description, location, time_zone, all_day optional)\n"
-        "- update_event: update an existing event (event_id required; summary, start_datetime, end_datetime, etc. optional)\n"
+        "description, location, time_zone, all_day optional). "
+        "CRITICAL DEFAULTS — always apply these unless the user explicitly says 'no Meet' or 'in person':\n"
+        "  * add_google_meet=true — ALWAYS. Every meeting is an online Google Meet by default.\n"
+        "  * attendees='email1@x.com,email2@y.com' → invites guests; Google Calendar sends them email invitations automatically.\n"
+        "  ALWAYS pass attendees when the user mentions inviting someone, sending an invite, or names/emails anyone.\n"
+        "- update_event: update an existing event (event_id required). Same add_google_meet and attendees parameters apply.\n"
         "- delete_event: delete an event (event_id required)\n"
-        "For create_event: use ISO format for datetimes (e.g. 2025-03-10T14:00:00). "
-        "Default time_zone is Asia/Kolkata. Set all_day=true for all-day events (use date only YYYY-MM-DD). "
-        "Always complete the task and return a clear summary."
+        "For create_event/update_event: use ISO format for datetimes (e.g. 2025-03-10T14:00:00). "
+        "Default time_zone is Asia/Kolkata. Set all_day=true for all-day events (use date only YYYY-MM-DD).\n"
+        "STANDARD WORKFLOW for any meeting request — follow these steps IN ORDER:\n"
+        "1. ALWAYS check for conflicts first: call list_events with time_min=<meeting_start> and time_max=<meeting_end> "
+        "(use ISO format with Z suffix, e.g. 2025-03-10T14:00:00+05:30). "
+        "If any events already exist in that time window, DO NOT create the meeting. "
+        "Instead, tell the user: 'That slot is already taken by [existing event name]. Could you suggest another time?' "
+        "List the conflicting event(s) and ask for an alternate time.\n"
+        "2. Only if the slot is FREE: call create_event with add_google_meet=true (always) and attendees='...' (if any were mentioned).\n"
+        "3. Return the google_meet_link and calendar event link in your summary.\n"
+        "NEVER skip the conflict check. NEVER create overlapping meetings."
     ),
     tools=[
         "mcp__calendar__list_calendars",
