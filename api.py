@@ -8,10 +8,10 @@ import sys
 import threading
 import uuid
 from pathlib import Path
-from queue import Queue
+from queue import Empty, Queue
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile, status
+from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -30,6 +30,7 @@ from database import (
     delete_session,
     delete_sheets_tokens,
     delete_slides_tokens,
+    delete_forms_tokens,
     get_calendar_tokens,
     get_docs_tokens,
     get_drive_tokens,
@@ -39,6 +40,7 @@ from database import (
     get_sessions_for_user,
     get_sheets_tokens,
     get_slides_tokens,
+    get_forms_tokens,
     get_user_by_email,
     init_db,
     rename_session,
@@ -78,6 +80,27 @@ ALLOWED_DOC_EXTENSIONS = {".pdf", ".docx", ".pptx", ".ppt", ".txt"}
 MAX_DOC_SIZE_MB = 20
 MAX_DOCS_PER_UPLOAD = 5
 MAX_EXTRACTED_TEXT_CHARS = 100_000
+
+# ---------------------------------------------------------------------------
+# Response-done notification channel (SSE)
+# ---------------------------------------------------------------------------
+# When an agent response completes (streaming or non-streaming), we broadcast
+# to all connected /chat/notifications clients for that user so the frontend
+# can refresh the session even if the user switched away.
+_notification_listeners: dict[int, list[Queue]] = {}
+_notification_lock = threading.Lock()
+
+
+def _broadcast_response_done(user_id: int, session_id: int) -> None:
+    """Thread-safe: notify all connected clients that a response is done for this session."""
+    event = {"type": "response_done", "session_id": session_id}
+    with _notification_lock:
+        listeners = _notification_listeners.get(user_id, [])
+    for q in listeners:
+        try:
+            q.put(event)
+        except Exception:
+            pass
 
 
 @app.on_event("startup")
@@ -133,13 +156,42 @@ class ChatResponse(BaseModel):
 # Auth dependency
 # ---------------------------------------------------------------------------
 
-bearer_scheme = HTTPBearer()
+bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def get_current_user(
-    credentials: Annotated[HTTPAuthorizationCredentials, Depends(bearer_scheme)],
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
 ) -> dict:
-    payload = decode_access_token(credentials.credentials)
+    token = credentials.credentials if credentials else None
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    payload = decode_access_token(token)
+    if payload is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return payload
+
+
+def get_current_user_or_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+    token: Annotated[str | None, Query(alias="token")] = None,
+) -> dict:
+    """Auth for SSE: accepts Bearer header or ?token= query param (EventSource can't send headers)."""
+    auth_token = credentials.credentials if credentials else token
+    if not auth_token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing credentials (use Authorization: Bearer or ?token=)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    payload = decode_access_token(auth_token)
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -671,6 +723,86 @@ def slides_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
 
 
 # ---------------------------------------------------------------------------
+# Google Forms OAuth endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/forms/connect", tags=["Forms"])
+def forms_connect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """
+    Generate the Google OAuth URL for Forms + Drive access.
+    The frontend should open this URL in a browser/popup so the user can
+    grant access. After approval Google redirects to /auth/forms/callback.
+    """
+    from forms_tools import get_forms_auth_url
+    user_id = int(current_user["sub"])
+    try:
+        auth_url = get_forms_auth_url(user_id)
+        return {"auth_url": auth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/forms/callback", response_class=HTMLResponse, tags=["Forms"])
+def forms_callback(code: str, state: str):
+    """
+    Google redirects here after the user approves Forms access.
+    Exchanges the code for tokens, saves them, and shows a success page.
+    This endpoint does NOT require a JWT — it is called by Google's redirect.
+    """
+    from forms_tools import exchange_forms_code
+    result = exchange_forms_code(code, state)
+    if result:
+        return HTMLResponse(content=f"""
+        <html>
+        <head><title>Google Forms Connected</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">✅</div>
+                <h2 style="color:#1a1a1a;">Google Forms Connected!</h2>
+                <p style="color:#555;">Connected account:<br><strong>{result['email']}</strong></p>
+                <p style="color:#888;font-size:14px;">You can close this tab and return to the chatbot.</p>
+            </div>
+        </body>
+        </html>
+        """)
+
+    return HTMLResponse(
+        status_code=400,
+        content="""
+        <html>
+        <head><title>Connection Failed</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">❌</div>
+                <h2 style="color:#1a1a1a;">Connection Failed</h2>
+                <p style="color:#555;">Could not connect your Google Forms account. Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """,
+    )
+
+
+@app.get("/auth/forms/status", tags=["Forms"])
+def forms_status(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Check whether the logged-in user has connected their Google Forms account."""
+    user_id = int(current_user["sub"])
+    tokens = get_forms_tokens(user_id)
+    return {
+        "connected": tokens is not None,
+        "google_email": tokens["google_email"] if tokens else None,
+        "connected_at": tokens["connected_at"] if tokens else None,
+    }
+
+
+@app.delete("/auth/forms/disconnect", status_code=204, tags=["Forms"])
+def forms_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Remove the stored Forms tokens, disconnecting Google Forms for this user."""
+    user_id = int(current_user["sub"])
+    delete_forms_tokens(user_id)
+
+
+# ---------------------------------------------------------------------------
 # Session endpoints
 # ---------------------------------------------------------------------------
 
@@ -920,6 +1052,8 @@ async def chat(
     if new_claude_session_id:
         save_claude_session_id(session_id, new_claude_session_id)
 
+    _broadcast_response_done(user_id, session_id)
+
     return ChatResponse(
         reply=reply,
         user=current_user["username"],
@@ -1008,6 +1142,60 @@ async def chat_stream(
                     yield _sse_event("tool_end", {"tool": item["tool"]})
         finally:
             thread.join(timeout=1.0)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response-done notification channel (SSE)
+# ---------------------------------------------------------------------------
+
+@app.get("/chat/notifications", tags=["Chat"])
+async def chat_notifications(
+    current_user: Annotated[dict, Depends(get_current_user_or_token)],
+):
+    """
+    Server-Sent Events stream for response-done notifications.
+    Connect and keep open. When an agent response completes (in any session),
+    you receive: event: response_done, data: {"type":"response_done","session_id":N}
+    Use this to refresh the session's messages when the user switched away.
+    Sends a heartbeat every 2s to keep the connection alive.
+    """
+    user_id = int(current_user["sub"])
+    my_queue: Queue = Queue()
+
+    with _notification_lock:
+        if user_id not in _notification_listeners:
+            _notification_listeners[user_id] = []
+        _notification_listeners[user_id].append(my_queue)
+
+    def _sse_event(event_type: str, data: dict) -> bytes:
+        return f"event: {event_type}\ndata: {json.dumps(data)}\n\n".encode("utf-8")
+
+    def event_generator():
+        try:
+            while True:
+                try:
+                    item = my_queue.get(timeout=2)
+                    yield _sse_event("response_done", item)
+                except Empty:
+                    yield _sse_event("heartbeat", {"ts": str(uuid.uuid4())[:8]})
+        finally:
+            with _notification_lock:
+                if user_id in _notification_listeners:
+                    lst = _notification_listeners[user_id]
+                    if my_queue in lst:
+                        lst.remove(my_queue)
+                    if not lst:
+                        del _notification_listeners[user_id]
 
     return StreamingResponse(
         event_generator(),
@@ -1357,6 +1545,8 @@ async def _run_agent_streaming(
         add_message(session_id, role="assistant", content=raw)
         if sid:
             save_claude_session_id(session_id, sid)
+
+        _broadcast_response_done(user_id, session_id)
 
         queue.put({
             "type": "done",

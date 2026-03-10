@@ -116,6 +116,15 @@ def init_db() -> None:
                 google_email  TEXT NOT NULL,
                 connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS forms_tokens (
+                user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                access_token  TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                token_expiry  TEXT NOT NULL,
+                google_email  TEXT NOT NULL,
+                connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         conn.commit()
 
@@ -533,5 +542,48 @@ def delete_slides_tokens(user_id: int) -> bool:
     """Remove Slides tokens for a user (disconnect Google Slides)."""
     with _get_conn() as conn:
         cur = conn.execute("DELETE FROM slides_tokens WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Forms Tokens
+# ---------------------------------------------------------------------------
+
+def save_forms_tokens(
+    user_id: int,
+    access_token: str,
+    refresh_token: str,
+    token_expiry: str,
+    google_email: str,
+) -> None:
+    """Insert or update Google Forms OAuth tokens for a user (upsert)."""
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO forms_tokens (user_id, access_token, refresh_token, token_expiry, google_email)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                access_token  = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_expiry  = excluded.token_expiry,
+                google_email  = excluded.google_email,
+                connected_at  = CURRENT_TIMESTAMP
+            """,
+            (user_id, access_token, refresh_token, token_expiry, google_email),
+        )
+        conn.commit()
+
+
+def get_forms_tokens(user_id: int) -> dict | None:
+    """Return Forms token dict for a user, or None if not connected."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM forms_tokens WHERE user_id = ?", (user_id,))
+
+
+def delete_forms_tokens(user_id: int) -> bool:
+    """Remove Forms tokens for a user (disconnect Google Forms)."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM forms_tokens WHERE user_id = ?", (user_id,))
         conn.commit()
         return cur.rowcount > 0

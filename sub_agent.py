@@ -4,22 +4,6 @@ from claude_agent_sdk import AgentDefinition
 # Existing agents
 # ---------------------------------------------------------------------------
 
-# Define the specialized subagent for data processing
-data_processor_agent = AgentDefinition(
-    description="Use this agent when you need to read and summarize mock data files.",
-    prompt="You are a data processing assistant. Use your tools to read the file and summarize its contents.",
-    tools=["mcp__my_tools__read_mock_data"],
-    model="haiku",
-)
-
-# Define the specialized subagent for drafting emails
-email_drafter_agent = AgentDefinition(
-    description="Use this agent when you need to draft professional emails, including subject lines and body content.",
-    prompt="You are an email drafting assistant. Use your tools to create well-structured, professional emails. Match the tone to the context (formal, casual, etc.) and include a clear subject line.",
-    tools=["mcp__my_tools__draft_email"],
-    model="haiku",
-)
-
 # Define the specialized subagent for all Gmail operations
 gmail_agent = AgentDefinition(
     description=(
@@ -337,6 +321,42 @@ calendar_agent = AgentDefinition(
         "mcp__calendar__create_event",
         "mcp__calendar__update_event",
         "mcp__calendar__delete_event",
+    ],
+    model="haiku",
+)
+
+
+# ---------------------------------------------------------------------------
+# Google Forms agent
+# ---------------------------------------------------------------------------
+
+forms_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Forms task: create forms, list forms, "
+        "add questions (text, paragraph, multiple choice, checkbox, dropdown, linear scale), "
+        "update form title/description, delete questions. Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Forms assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- create_form: create a new empty form (returns form_id, form_url, title)\n"
+        "- list_forms: list user's forms from Drive\n"
+        "- get_form: get full form structure (info, items/questions)\n"
+        "- add_question: add a question. question_type: 'text', 'paragraph', 'multiple_choice', "
+        "'checkbox', 'dropdown', 'linear_scale'. For multiple_choice/checkbox/dropdown: options required (comma-separated). "
+        "For linear_scale: low, high (default 1-5), low_label, high_label optional.\n"
+        "- update_form_info: update form title and/or description\n"
+        "- delete_form_item: delete a question by 0-based index (use get_form to see order)\n"
+        "Always return the form URL at the end."
+    ),
+    tools=[
+        "mcp__forms__create_form",
+        "mcp__forms__list_forms",
+        "mcp__forms__get_form",
+        "mcp__forms__add_question",
+        "mcp__forms__update_form_info",
+        "mcp__forms__delete_form_item",
     ],
     model="haiku",
 )
