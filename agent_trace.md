@@ -275,3 +275,172 @@ The spreadsheet looks professional and organized! 📊
 
 You can view it here: https://docs.google.com/spreadsheets/d/1qKRukUbk8QggEWNLDCHv_o1XXx7yDjY06hCVKc2BNCE/edit
 [Result] turns=2 duration=36707ms
+
+======================================================================
+=== Session 48 | 2026-03-12 15:42:16 ===
+
+USER: Create a Google Doc with a summary of my last 5 emails
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll get your last 5 emails and create a Google Doc with a summary of them.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'gmail_agent': List the last 5 emails from the inbox. user_id=1, max_results=5, unread_only=fal...
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__list_emails {'user_id': 1, 'max_results': 5, 'unread_only': False, 'label': 'INBOX'}
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__get_email {'user_id': 1, 'email_id': '19ce151e3fa6a04d'}
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__get_email {'user_id': 1, 'email_id': '19cde980f28ae83e'}
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__get_email {'user_id': 1, 'email_id': '19cde064c12f5cfe'}
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__get_email {'user_id': 1, 'email_id': '19cdda1c68a6d023'}
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__get_email {'user_id': 1, 'email_id': '19cdb52295553afb'}
+[Agent: Main agent]
+[Agent: Main agent]
+Now I'll create a Google Doc with this email summary.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'docs_agent': Create a Google Doc titled "Email Summary - Last 5 Emails" and add the following...
+[Agent: docs_agent]
+  → [Tool] mcp__docs__create_document {'user_id': 1, 'title': 'Email Summary - Last 5 Emails'}
+[Agent: docs_agent]
+  → [Tool] mcp__docs__append_text {'user_id': 1, 'document_id': '18F8D6r843TX4FEUR-YVxB2ncfm9cJRD69t8BRPdhWTA', 'text': 'Email Summary - Last 5 Emails\nDate: March 12, 2026\n\n1. Make - Community Support (Mar 12, 2026) - UNREAD\n   From: info@make.com\n   Subject: "Feeling a bit stuck? Our community has the answers"\n   Type: Promotional/Tutorial email\n   \n   Summary: Promotional email encouraging you to join the Make community for automation support. Highlights 50,000+ community members and 10,000+ answered questions. Provides links to community forum and documentation.\n\n2. AWS - Invoice Email Address Change (Mar 11, 2026)\n   From: no-reply@amazonaws.com\n   Subject: "Important – AWS Invoice e-mail address changes"\n   Type: Service Update\n   \n   Summary: Important notification that starting March 25, 2026, all AWS invoices will be sent from "invoicing@aws.com" instead of the current address. Action required: Update any automated invoice processing rules with the new email address.\n\n3. Google Cloud Platform - Account Verification Required (Mar 11, 2026) - UNREAD\n   From: CloudPlatform-noreply@google.com\n   Subject: "[Action required] Help Google verify your account by Apr 24, 2026"\n   Type: Account Verification\n   \n   Summary: Urgent action required. Account ID 8844-8065-2575 needs verification to protect against fraud. You must complete verification process via provided link or risk losing access to Google Cloud services.\n\n4. Thesys - Open Source Rendering Engine Announcement (Mar 11, 2026)\n   From: hello@thesys.dev\n   Subject: "We\'re open sourcing our rendering engine"\n   Type: Promotional/Product Update\n   \n   Summary: Announcement of OpenUI, an open standard for generative UI. March C1 release will include OpenUI as a free upgrade with 3x faster rendering, 67% fewer tokens needed, and improved reliability. Invites users to star the GitHub repository.\n\n5. Eleven Labs Inc. - Payment Confirmation Needed (Mar 11, 2026) - UNREAD\n   From: billing@stripe.com (Eleven Labs Inc.)\n   Subject: "Reminder: Confirm your ₹10,280.16 payment to Eleven Labs Inc."\n   Type: Payment Confirmation\n   \n   Summary: Payment confirmation required for monthly Eleven Labs subscription (₹10,280.16). Requires Mastercard Identity Check authentication for security. Payment period: Feb 9 – Mar 9, 2026. Contains itemized billing details showing Pro subscription (₹8,712.00) plus 18% IGST tax.\n\n---\nAction Items:\n• 3 unread emails requiring attention\n• AWS: Update email filters by March 25, 2026\n• Google Cloud: Complete account verification by April 24, 2026\n• Eleven Labs: Confirm payment of ₹10,280.16'}
+[Agent: docs_agent]
+  → [Tool] mcp__docs__insert_text {'user_id': 1, 'document_id': '18F8D6r843TX4FEUR-YVxB2ncfm9cJRD69t8BRPdhWTA', 'index': 1, 'text': 'Email Summary - Last 5 Emails\nDate: March 12, 2026\n\n1. Make - Community Support (Mar 12, 2026) - UNREAD\n   From: info@make.com\n   Subject: "Feeling a bit stuck? Our community has the answers"\n   Type: Promotional/Tutorial email\n   \n   Summary: Promotional email encouraging you to join the Make community for automation support. Highlights 50,000+ community members and 10,000+ answered questions. Provides links to community forum and documentation.\n\n2. AWS - Invoice Email Address Change (Mar 11, 2026)\n   From: no-reply@amazonaws.com\n   Subject: "Important – AWS Invoice e-mail address changes"\n   Type: Service Update\n   \n   Summary: Important notification that starting March 25, 2026, all AWS invoices will be sent from "invoicing@aws.com" instead of the current address. Action required: Update any automated invoice processing rules with the new email address.\n\n3. Google Cloud Platform - Account Verification Required (Mar 11, 2026) - UNREAD\n   From: CloudPlatform-noreply@google.com\n   Subject: "[Action required] Help Google verify your account by Apr 24, 2026"\n   Type: Account Verification\n   \n   Summary: Urgent action required. Account ID 8844-8065-2575 needs verification to protect against fraud. You must complete verification process via provided link or risk losing access to Google Cloud services.\n\n4. Thesys - Open Source Rendering Engine Announcement (Mar 11, 2026)\n   From: hello@thesys.dev\n   Subject: "We\'re open sourcing our rendering engine"\n   Type: Promotional/Product Update\n   \n   Summary: Announcement of OpenUI, an open standard for generative UI. March C1 release will include OpenUI as a free upgrade with 3x faster rendering, 67% fewer tokens needed, and improved reliability. Invites users to star the GitHub repository.\n\n5. Eleven Labs Inc. - Payment Confirmation Needed (Mar 11, 2026) - UNREAD\n   From: billing@stripe.com (Eleven Labs Inc.)\n   Subject: "Reminder: Confirm your ₹10,280.16 payment to Eleven Labs Inc."\n   Type: Payment Confirmation\n   \n   Summary: Payment confirmation required for monthly Eleven Labs subscription (₹10,280.16). Requires Mastercard Identity Check authentication for security. Payment period: Feb 9 – Mar 9, 2026. Contains itemized billing details showing Pro subscription (₹8,712.00) plus 18% IGST tax.\n\n---\nAction Items:\n• 3 unread emails requiring attention\n• AWS: Update email filters by March 25, 2026\n• Google Cloud: Complete account verification by April 24, 2026\n• Eleven Labs: Confirm payment of ₹10,280.16'}
+[Agent: Main agent]
+[Agent: Main agent]
+✅ **Done!** I've created a Google Doc with a summary of your last 5 emails.
+
+**📄 Document Details:**
+- **Title:** Email Summary - Last 5 Emails
+- **URL:** [Open Document](https://docs.google.com/document/d/18F8D6r843TX4FEUR-YVxB2ncfm9cJRD69t8BRPdhWTA/edit?usp=drivesdk)
+
+**📧 Summary Overview:**
+1. **Make** - Community support tutorial (UNREAD)
+2. **AWS** - Invoice email address changing March 25, 2026
+3. **Google Cloud** - Account verification required by April 24, 2026 ⚠️ (UNREAD)
+4. **Thesys** - OpenUI rendering engine announcement
+5. **Eleven Labs** - Payment confirmation needed: ₹10,280.16 (UNREAD)
+
+**⚡ Action Items Highlighted:**
+- Update AWS email filters by March 25
+- Complete Google Cloud verification by April 24
+- Confirm Eleven Labs payment
+
+You can now access the document anytime via the link above!
+[Result] turns=3 duration=77706ms
+
+======================================================================
+=== Session 48 | 2026-03-12 15:44:27 ===
+
+USER: Create a feedback form with 5 different question types and share it via email to vanshsoni@dealberg.com
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll create a feedback form with 5 different question types and then email it to vanshsoni@dealberg.com.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'forms_agent': Create a Google Form titled "Feedback Form" with description "We value your feed...
+[Agent: forms_agent]
+  → [Tool] mcp__forms__create_form {'user_id': 1, 'title': 'Feedback Form', 'document_title': 'Feedback Form'}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__update_form_info {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'title': 'Feedback Form', 'description': 'We value your feedback! Please take a moment to share your thoughts with us.'}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__add_question {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'question_type': 'text', 'title': 'What is your name?', 'required': True, 'index': 0, 'options': '', 'low': 1, 'high': 5, 'low_label': '', 'high_label': ''}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__add_question {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'question_type': 'multiple_choice', 'title': 'How satisfied are you with our service?', 'options': 'Very Satisfied,Satisfied,Neutral,Dissatisfied,Very Dissatisfied', 'required': True, 'index': 1, 'low': 1, 'high': 5, 'low_label': '', 'high_label': ''}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__add_question {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'question_type': 'checkbox', 'title': 'Which features do you use most often? (Select all that apply)', 'options': 'User Interface,Performance,Customer Support,Documentation,Pricing', 'required': False, 'index': 2, 'low': 1, 'high': 5, 'low_label': '', 'high_label': ''}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__add_question {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'question_type': 'paragraph', 'title': 'Please share any suggestions or comments you have for us:', 'required': False, 'index': 3, 'options': '', 'low': 1, 'high': 5, 'low_label': '', 'high_label': ''}
+[Agent: forms_agent]
+  → [Tool] mcp__forms__add_question {'user_id': 1, 'form_id': '1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk', 'question_type': 'linear_scale', 'title': 'How likely are you to recommend us to a friend or colleague?', 'required': True, 'index': 4, 'options': '', 'low': 1, 'high': 10, 'low_label': 'Not likely', 'high_label': 'Very likely'}
+[Agent: Main agent]
+[Agent: Main agent]
+Now I'll send the form via email to vanshsoni@dealberg.com.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'gmail_agent': Send an email to vanshsoni@dealberg.com with the following details:
+
+user_id=1
+t...
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__send_email {'user_id': 1, 'to': 'vanshsoni@dealberg.com', 'subject': "Feedback Form - We'd Love to Hear From You!", 'body': 'Hi,\n\nWe would greatly appreciate your feedback! Please take a few moments to complete our feedback form.\n\nYour input helps us improve and serve you better.\n\n📋 Feedback Form Link:\nhttps://docs.google.com/forms/d/1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk/viewform\n\nThe form includes questions about:\n• Your satisfaction with our service\n• Features you use most\n• Recommendations and suggestions\n• Your likelihood to recommend us\n\nThank you for your time and valuable feedback!\n\nBest regards'}
+[Agent: Main agent]
+[Agent: Main agent]
+✅ **All done!** I've successfully created a feedback form and shared it via email.
+
+## What was completed:
+
+**📋 Feedback Form Created:**
+- **Title:** Feedback Form
+- **5 Different Question Types:**
+  1. **Text** - Name field (required)
+  2. **Multiple Choice** - Satisfaction rating (required)
+  3. **Checkbox** - Feature usage selection (optional)
+  4. **Paragraph** - Open-ended suggestions (optional)
+  5. **Linear Scale** - Recommendation likelihood 1-10 (required)
+
+**📧 Email Sent:**
+- **To:** vanshsoni@dealberg.com
+- **Subject:** "Feedback Form - We'd Love to Hear From You!"
+- **Includes:** Direct link to the form and overview of questions
+
+**🔗 Form Link:** https://docs.google.com/forms/d/1DH9e9JwGAF3kjAOwMxqXCUURwhm-Kv7OJ30stv3a4Kk/viewform
+
+The recipient can now access and complete the feedback form!
+[Result] turns=3 duration=59577ms
+
+======================================================================
+=== Session 48 | 2026-03-12 15:46:44 ===
+
+USER: Create a Google Meet link
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll create a Google Meet link for you.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'meet_agent': Create a new Google Meet meeting space. user_id=1
+[Agent: meet_agent]
+  → [Tool] mcp__meet__create_meet_space {'user_id': 1}
+[Agent: Main agent]
+[Agent: Main agent]
+✅ **Google Meet link created successfully!**
+
+**📹 Meeting Link:** https://meet.google.com/obb-qtgx-vbf
+
+**🔢 Meeting Code:** obb-qtgx-vbf
+
+You can share this link with anyone you want to meet with. They can join by clicking the link or entering the meeting code in Google Meet.
+[Result] turns=2 duration=19011ms
+
+======================================================================
+=== Session 48 | 2026-03-12 15:47:35 ===
+
+USER: "Schedule a meeting with a Meet link tomorrow at 3pm
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll schedule a meeting for tomorrow at 3pm with a Google Meet link.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'calendar_agent': Create a calendar event for tomorrow (March 13, 2026) at 3:00 PM IST with a Goog...
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__list_events {'user_id': 1, 'calendar_id': 'primary', 'time_min': '2026-03-13T15:00:00+05:30', 'time_max': '2026-03-13T16:00:00+05:30', 'max_results': 20, 'order_by': 'startTime'}
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__create_event {'user_id': 1, 'summary': 'Meeting', 'start_datetime': '2026-03-13T15:00:00', 'end_datetime': '2026-03-13T16:00:00', 'description': 'Scheduled meeting with Google Meet', 'location': '', 'calendar_id': 'primary', 'time_zone': 'Asia/Kolkata', 'all_day': False, 'add_google_meet': True, 'attendees': ''}
+[Agent: Main agent]
+[Agent: Main agent]
+✅ **Meeting scheduled successfully!**
+
+📅 **Date & Time:** Friday, March 13, 2026 at 3:00 PM - 4:00 PM IST
+
+📹 **Google Meet Link:** https://meet.google.com/mkp-sybk-pbp
+
+🔗 **Calendar Event:** https://www.google.com/calendar/event?eid=aXQ4NWttc2ZndjRrdTJ1MGlkZDl1bW9ocWcgYWlhZG1pbkBuY2ZlLmFjLmlu
+
+The event has been added to your calendar with the Google Meet link automatically attached!
+[Result] turns=2 duration=27298ms

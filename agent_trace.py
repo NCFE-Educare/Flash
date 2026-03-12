@@ -1,7 +1,8 @@
 """
-Agent trace module — writes agent activity to a file when AGENT_TRACE=1.
+Agent trace module — writes agent activity to agent_trace.md.
 
 Run `python logs.py` in a separate terminal to watch the trace in real time.
+Set AGENT_TRACE=0 to disable (enabled by default).
 """
 
 import os
@@ -10,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 
 TRACE_FILE = Path(__file__).parent / "agent_trace.md"
-_ENABLED = os.environ.get("AGENT_TRACE", "").strip() == "1"
+_ENABLED = os.environ.get("AGENT_TRACE", "1").strip() != "0"
 _LOCK = threading.Lock()
 
 
