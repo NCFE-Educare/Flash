@@ -1217,6 +1217,8 @@ async def chat_stream(
                         "document_urls": body.document_urls or [],
                     })
                     break
+                elif event_type == "thinking":
+                    yield _sse_event("thinking", {"content": item["content"]})
                 elif event_type == "text":
                     yield _sse_event("text", {"content": item["content"]})
                 elif event_type == "tool_start":
@@ -1480,6 +1482,7 @@ async def _run_agent(
 
     async def _execute(options: ClaudeAgentOptions, msg: str) -> tuple[str, str | None]:
         text_chunks: list[str] = []
+        response_chunks: list[str] = []
         new_sid: str | None = None
         amk = _agent_model_keys(options)
         delegation_stack: list[str] = []
@@ -1500,6 +1503,8 @@ async def _run_agent(
                         delegation_stack.pop()
                     agent_label = delegation_stack[-1] if delegation_stack else "Main agent"
                     trace_write(f"[Agent: {agent_label}]")
+                    has_tool_use = any(isinstance(b, ToolUseBlock) for b in message.content)
+                    turn_chunks: list[str] = []
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             if block.name == "Task":
@@ -1522,10 +1527,14 @@ async def _run_agent(
                                 trace_write(f"  --- {agent_label} response ---")
                             trace_write(block.text)
                             text_chunks.append(block.text)
+                            turn_chunks.append(block.text)
+                    if not has_tool_use and turn_chunks:
+                        response_chunks = turn_chunks
                 elif isinstance(message, ResultMessage):
                     new_sid = message.session_id
                     trace_write(f"[Result] turns={message.num_turns} duration={message.duration_ms}ms")
-        raw = "\n".join(text_chunks) if text_chunks else "(no response)"
+        final_chunks = response_chunks if response_chunks else text_chunks
+        raw = "\n".join(final_chunks) if final_chunks else "(no response)"
         raw = raw.replace("\\n", "\n").replace("\\t", "\t")
         return raw, new_sid
 
@@ -1645,6 +1654,7 @@ async def _run_agent_streaming(
 
     async def _execute_streaming(opts: ClaudeAgentOptions, msg: str) -> None:
         assistant_texts: list[str] = []
+        last_turn_texts: list[str] = []
         sid: str | None = None
         in_tool = False
         current_tool: str | None = None
@@ -1672,7 +1682,7 @@ async def _run_agent_streaming(
                         if delta.get("type") == "text_delta" and not in_tool:
                             chunk = delta.get("text", "")
                             if chunk:
-                                queue.put({"type": "text", "content": chunk})
+                                queue.put({"type": "thinking", "content": chunk})
 
                     elif event_type == "content_block_stop":
                         if in_tool and current_tool:
@@ -1692,6 +1702,8 @@ async def _run_agent_streaming(
                         delegation_stack.pop()
                     agent_label = delegation_stack[-1] if delegation_stack else "Main agent"
                     trace_write(f"[Agent: {agent_label}]")
+                    has_tool_use = any(isinstance(b, ToolUseBlock) for b in message.content)
+                    turn_texts: list[str] = []
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             if block.name == "Task":
@@ -1714,11 +1726,15 @@ async def _run_agent_streaming(
                                 trace_write(f"  --- {agent_label} response ---")
                             trace_write(block.text)
                             assistant_texts.append(block.text)
+                            turn_texts.append(block.text)
+                    if not has_tool_use and turn_texts:
+                        last_turn_texts = turn_texts
                 elif isinstance(message, ResultMessage):
                     sid = message.session_id
                     trace_write(f"[Result] turns={message.num_turns} duration={message.duration_ms}ms")
 
-        raw = "\n".join(assistant_texts) if assistant_texts else "(no response)"
+        final_texts = last_turn_texts if last_turn_texts else assistant_texts
+        raw = "\n".join(final_texts) if final_texts else "(no response)"
         raw = raw.replace("\\n", "\n").replace("\\t", "\t")
 
         add_message(session_id, role="assistant", content=raw)
@@ -1726,6 +1742,9 @@ async def _run_agent_streaming(
             save_claude_session_id(session_id, sid)
 
         _broadcast_response_done(user_id, session_id)
+
+        for chunk in final_texts:
+            queue.put({"type": "text", "content": chunk})
 
         queue.put({
             "type": "done",

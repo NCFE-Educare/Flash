@@ -444,3 +444,204 @@ I'll schedule a meeting for tomorrow at 3pm with a Google Meet link.
 
 The event has been added to your calendar with the Google Meet link automatically attached!
 [Result] turns=2 duration=27298ms
+
+======================================================================
+=== Session 49 | 2026-03-12 16:09:06 ===
+
+USER: what meetings i have tmr?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check your calendar for tomorrow's meetings.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'calendar_agent': List all calendar events for tomorrow, March 13, 2026. user_id=1. Show the event...
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__list_events {'user_id': 1, 'calendar_id': 'primary', 'time_min': '2026-03-13T00:00:00Z', 'time_max': '2026-03-13T23:59:59Z', 'max_results': 50, 'order_by': 'startTime'}
+[Agent: Main agent]
+[Agent: Main agent]
+📅 **Your meetings for tomorrow (March 13, 2026):**
+
+You have **1 meeting** scheduled:
+
+- **Meeting**
+  - ⏰ Time: 3:00 PM - 4:00 PM IST
+  - 📍 Location: Google Meet (link attached)
+  - Duration: 1 hour
+
+Looks like you have a light day tomorrow with just one afternoon meeting! 😊
+[Result] turns=2 duration=18303ms
+
+======================================================================
+=== Session 49 | 2026-03-12 16:12:07 ===
+
+USER: what meetings i have tmr?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+You have **1 meeting** scheduled for tomorrow (March 13, 2026):
+
+📅 **Meeting**
+- **Time:** 3:00 PM - 4:00 PM IST
+- **Duration:** 1 hour
+- **Details:** Scheduled meeting with Google Meet link attached
+
+That's your only event for tomorrow!
+[Result] turns=1 duration=5218ms
+
+======================================================================
+=== Session 50 | 2026-03-12 16:12:25 ===
+
+USER: what meetings i have tmr?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check your calendar for tomorrow's meetings.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'calendar_agent': List all events/meetings for tomorrow (March 13, 2026) for user_id=1. Show the t...
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__list_events {'user_id': 1, 'calendar_id': 'primary', 'time_min': '2026-03-13T00:00:00Z', 'time_max': '2026-03-13T23:59:59Z', 'max_results': 20, 'order_by': 'startTime'}
+[Agent: Main agent]
+[Agent: Main agent]
+You have **1 meeting** scheduled for tomorrow (March 13, 2026):
+
+📅 **Meeting**  
+⏰ **Time:** 3:00 PM - 4:00 PM (IST)  
+📍 **Location:** Google Meet (link included)  
+📝 **Description:** Scheduled meeting with Google Meet
+
+That's your only scheduled event for tomorrow! 🗓️
+[Result] turns=2 duration=17384ms
+
+======================================================================
+=== Session 51 | 2026-03-12 16:15:29 ===
+
+USER: what meetings i have tmr?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check your calendar for tomorrow's meetings.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'calendar_agent': List all calendar events for tomorrow (March 13, 2026) for user_id=1. Show the t...
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__list_events {'user_id': 1, 'calendar_id': 'primary', 'time_min': '2026-03-13T00:00:00Z', 'time_max': '2026-03-13T23:59:59Z', 'max_results': 20, 'order_by': 'startTime'}
+[Agent: Main agent]
+[Agent: Main agent]
+📅 **Your meetings for tomorrow (March 13, 2026):**
+
+You have **1 meeting** scheduled:
+
+**Meeting**
+- **Time:** 3:00 PM - 4:00 PM IST
+- **Description:** Scheduled meeting with Google Meet
+- **Duration:** 1 hour
+
+The meeting includes a Google Meet link for online participation. Would you like me to get more details about this meeting or help you with anything else related to your calendar?
+[Result] turns=2 duration=18240ms
+
+======================================================================
+=== Session 52 | 2026-03-12 16:21:49 ===
+
+USER: what meetings i have tmr?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check your calendar for tomorrow's meetings.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'calendar_agent': List all calendar events for tomorrow, March 13, 2026. user_id=1. Show the event...
+[Agent: calendar_agent]
+  → [Tool] mcp__calendar__list_events {'user_id': 1, 'calendar_id': 'primary', 'time_min': '2026-03-13T00:00:00Z', 'time_max': '2026-03-13T23:59:59Z', 'max_results': 20, 'order_by': 'startTime'}
+[Agent: Main agent]
+[Agent: Main agent]
+You have **1 meeting** scheduled for tomorrow (March 13, 2026):
+
+📅 **Meeting**
+- **Time:** 3:00 PM - 4:00 PM IST
+- **Duration:** 1 hour
+- **Platform:** Google Meet
+- **Location:** Not specified
+
+Is there anything you'd like me to help you with regarding this meeting?
+[Result] turns=2 duration=16937ms
+
+======================================================================
+=== Session 53 | 2026-03-12 16:26:56 ===
+
+USER: tell me my recent mail
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check your recent emails for you.
+[Agent: Main agent]
+  → [Subagent] Delegating to 'gmail_agent': List the most recent emails from the inbox for user_id=1. Show at least 10 recen...
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__list_emails {'user_id': 1, 'max_results': 10, 'unread_only': False, 'label': 'INBOX'}
+[Agent: Main agent]
+[Agent: Main agent]
+Here are your **10 most recent emails** from your inbox:
+
+📧 **Recent Emails:**
+
+1. **Make** - *Feeling a bit stuck? Our community has the answers* (Mar 12, 2026) 🔴 Unread
+   - From peers to experts, support is just a click away.
+
+2. **Amazon Web Services** - *Important – AWS Invoice e-mail address changes* (Mar 11, 2026) ✅ Read
+   - AWS invoice emails will come from "invoicing@aws.com" starting March 25, 2026
+
+3. **Google Cloud Platform** - *[Action required] Help Google verify your account by Apr 24, 2026* (Mar 11, 2026) 🔴 Unread
+   - Verify your Google Cloud account by Apr 24, 2026
+
+4. **Thesys** - *We're open sourcing our rendering engine* (Mar 11, 2026) ✅ Read
+   - Your feedback helped us improve...
+
+5. **Eleven Labs Inc.** - *Reminder: Confirm your ₹10,280.16 payment* (Mar 11, 2026) 🔴 Unread
+   - Payment confirmation needed
+
+6. **OpenAI** - *Deprecation Notice: realtime-preview models shutting down May 7, 2026* (Mar 11, 2026) 🔴 Unread
+   - Preview models being deprecated
+
+7. **Thesys** - *New: App Integrations in Agent Builder* (Mar 10, 2026) 🔴 Unread
+   - Agents can now connect to 900+ apps
+
+8. **Eleven Labs Inc.** - *Reminder: Confirm your ₹10,280.16 payment* (Mar 10, 2026) 🔴 Unread
+   - Payment confirmation needed (duplicate reminder)
+
+9. **AWS Budgets** - *Budget has exceeded your alert threshold* (Mar 9, 2026) 🔴 Unread
+   - Monthly cost budget exceeded
+
+10. **OpenAI** - *New speech models now available in the Realtime API* (Mar 9, 2026) 🔴 Unread
+    - Introducing gpt-realtime-1.5 and gpt-audio-1.5
+
+**Summary:** You have **7 unread emails** out of 10 recent messages. Most are service notifications from cloud providers and AI platforms.
+
+Would you like me to help you with any specific email, such as reading the full content or taking action on any of them?
+[Result] turns=2 duration=33051ms
+
+======================================================================
+=== Session 54 | 2026-03-12 16:32:53 ===
+
+USER: how many forms do i have right now?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'll check how many Google Forms you have right now.
+[Agent: Main agent]
+  → [Tool] mcp__forms__list_forms {'user_id': 1, 'max_results': 100}
+[Agent: Main agent]
+[Agent: Main agent]
+You currently have **3 Google Forms** 📋:
+
+| Form Name | Last Modified | Created |
+|-----------|---------------|---------|
+| **Feedback Form** | Mar 12, 2026 | Mar 12, 2026 |
+| **Class Survey** | Mar 12, 2026 | Mar 12, 2026 |
+| **Simple Feedback Form** | Mar 10, 2026 | Mar 10, 2026 |
+
+All three forms are accessible in your Google Drive. Would you like to view details of any specific form or create a new one? 😊
+[Result] turns=2 duration=16826ms
