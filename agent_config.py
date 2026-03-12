@@ -45,7 +45,7 @@ def make_agent_options(
     from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
     from forms_tools import forms_server
     from slides_tools import slides_data_server, slides_format_server
-    from sub_agent import calendar_agent, docs_agent, drive_agent, forms_agent, gmail_agent, meet_agent, sheets_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
+    from sub_agent import calendar_agent, docs_agent, drive_agent, forms_agent, gmail_agent, meet_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
     from tools import my_tools_server
 
     uid = str(user_id) if user_id is not None else None
@@ -57,9 +57,18 @@ def make_agent_options(
             f"delegate to 'gmail_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
         )
         sheets_rule = (
-            f"- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
-            f"conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
-            f"delegate to 'sheets_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
+            f"- Google Sheets DATA tasks (create spreadsheet, read/write/append/clear cells, "
+            f"manage worksheets, sort, find-replace, list spreadsheets) → "
+            f"delegate to 'sheets_data_agent'. Always include 'user_id={uid}' in the task prompt.\n"
+            f"- Google Sheets FORMATTING tasks (colors, fonts, bold, borders, merge, freeze rows/columns, "
+            f"resize, number format, alignment) → "
+            f"delegate to 'sheets_format_agent'. Always include 'user_id={uid}', spreadsheet_id, and sheet_name.\n"
+            f"- Google Sheets VISUAL tasks (charts, conditional formatting, data validation/dropdowns, "
+            f"sparklines) → "
+            f"delegate to 'sheets_visual_agent'. Always include 'user_id={uid}', spreadsheet_id, and sheet info.\n"
+            f"- For COMPLEX Sheets tasks (e.g. create spreadsheet + write data + format + chart), "
+            f"delegate to each sheets sub-agent in order: sheets_data_agent FIRST, then sheets_format_agent, "
+            f"then sheets_visual_agent. Pass the spreadsheet_id from the first step to subsequent ones.\n"
         )
         docs_rule = (
             f"- ANY Google Docs task (create document, read content, insert/append/replace text, etc.) → "
@@ -95,9 +104,18 @@ def make_agent_options(
             "delegate to 'gmail_agent' subagent. Always include the user_id in the task prompt.\n"
         )
         sheets_rule = (
-            "- ANY Google Sheets task (create spreadsheet, read/write data, formatting, charts, "
-            "conditional formatting, dropdowns, sparklines, worksheet management, etc.) → "
-            "delegate to 'sheets_agent' subagent. Always include the user_id in the task prompt.\n"
+            "- Google Sheets DATA tasks (create spreadsheet, read/write/append/clear cells, "
+            "manage worksheets, sort, find-replace, list spreadsheets) → "
+            "delegate to 'sheets_data_agent'. Always include the user_id in the task prompt.\n"
+            "- Google Sheets FORMATTING tasks (colors, fonts, bold, borders, merge, freeze rows/columns, "
+            "resize, number format, alignment) → "
+            "delegate to 'sheets_format_agent'. Always include the user_id, spreadsheet_id, and sheet_name.\n"
+            "- Google Sheets VISUAL tasks (charts, conditional formatting, data validation/dropdowns, "
+            "sparklines) → "
+            "delegate to 'sheets_visual_agent'. Always include the user_id, spreadsheet_id, and sheet info.\n"
+            "- For COMPLEX Sheets tasks (e.g. create spreadsheet + write data + format + chart), "
+            "delegate to each sheets sub-agent in order: sheets_data_agent FIRST, then sheets_format_agent, "
+            "then sheets_visual_agent. Pass the spreadsheet_id from the first step to subsequent ones.\n"
         )
         docs_rule = (
             "- ANY Google Docs task (create document, read content, insert/append/replace text, etc.) → "
@@ -200,7 +218,6 @@ def make_agent_options(
         },
         agents={
             "gmail_agent": gmail_agent,
-            "sheets_agent": sheets_agent,
             "sheets_data_agent": sheets_data_agent,
             "sheets_format_agent": sheets_format_agent,
             "sheets_visual_agent": sheets_visual_agent,

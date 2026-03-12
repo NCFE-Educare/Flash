@@ -1119,6 +1119,7 @@ async def chat(
         reply, new_claude_session_id = await loop.run_in_executor(
             pool,
             _run_agent_in_thread,
+            session_id,
             body.message,
             user_id,
             claude_session_id,
@@ -1295,6 +1296,7 @@ async def chat_notifications(
 # ---------------------------------------------------------------------------
 
 def _run_agent_in_thread(
+    session_id: int,
     user_message: str,
     user_id: int,
     claude_session_id: str | None,
@@ -1315,7 +1317,7 @@ def _run_agent_in_thread(
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(
             _run_agent(
-                user_message, user_id, claude_session_id, history,
+                session_id, user_message, user_id, claude_session_id, history,
                 image_urls or [], document_urls or [],
             )
         )
@@ -1423,6 +1425,7 @@ def _build_context_from_db(history: list[dict], current_message: str) -> str:
 
 
 async def _run_agent(
+    session_id: int,
     user_message: str,
     user_id: int,
     claude_session_id: str | None,
@@ -1454,7 +1457,10 @@ async def _run_agent(
         ClaudeSDKClient,
         ResultMessage,
         TextBlock,
+        ToolUseBlock,
     )
+
+    from agent_trace import session_start as trace_session_start, write as trace_write
 
     agent_cwd = Path(__file__).parent / "cwd"
     agent_cwd.mkdir(exist_ok=True)
@@ -1462,22 +1468,65 @@ async def _run_agent(
     def _make_options(resume_id: str | None) -> ClaudeAgentOptions:
         return make_agent_options(agent_cwd=agent_cwd, user_id=user_id, resume_id=resume_id)
 
+    def _agent_model_keys(options: ClaudeAgentOptions) -> dict[str, str]:
+        """Map agent_name → model keyword for delegation-stack tracking."""
+        out: dict[str, str] = {}
+        if options.agents:
+            for name, agent_def in options.agents.items():
+                model = getattr(agent_def, "model", None)
+                if model:
+                    out[name] = model.lower()
+        return out
+
     async def _execute(options: ClaudeAgentOptions, msg: str) -> tuple[str, str | None]:
         text_chunks: list[str] = []
         new_sid: str | None = None
+        amk = _agent_model_keys(options)
+        delegation_stack: list[str] = []
+        pending_delegation: str | None = None
+        trace_session_start(session_id, user_message)
         async with ClaudeSDKClient(options=options) as client:
             await client.query(msg)
             async for message in client.receive_response():
                 if isinstance(message, AssistantMessage):
+                    msg_model = (message.model or "").lower()
+                    if pending_delegation:
+                        delegation_stack.append(pending_delegation)
+                        pending_delegation = None
+                    while delegation_stack:
+                        top_model = amk.get(delegation_stack[-1], "")
+                        if top_model and top_model in msg_model:
+                            break
+                        delegation_stack.pop()
+                    agent_label = delegation_stack[-1] if delegation_stack else "Main agent"
+                    trace_write(f"[Agent: {agent_label}]")
                     for block in message.content:
-                        if isinstance(block, TextBlock):
+                        if isinstance(block, ToolUseBlock):
+                            if block.name == "Task":
+                                agent_name = (
+                                    (block.input or {}).get("subagent_type")
+                                    or (block.input or {}).get("agent")
+                                    or "subagent"
+                                )
+                                task = str((block.input or {}).get("prompt") or (block.input or {}).get("task") or (block.input or {}).get("description", ""))
+                                task_preview = task[:80] + "..." if len(task) > 80 else task
+                                trace_write(f"  → [Subagent] Delegating to '{agent_name}': {task_preview}")
+                                pending_delegation = agent_name
+                            elif block.name == "WebSearch":
+                                query = (block.input or {}).get("query", "")
+                                trace_write(f"  → [WebSearch] Searching: {query}")
+                            else:
+                                trace_write(f"  → [Tool] {block.name} {block.input}")
+                        elif isinstance(block, TextBlock):
+                            if agent_label != "Main agent":
+                                trace_write(f"  --- {agent_label} response ---")
+                            trace_write(block.text)
                             text_chunks.append(block.text)
                 elif isinstance(message, ResultMessage):
                     new_sid = message.session_id
+                    trace_write(f"[Result] turns={message.num_turns} duration={message.duration_ms}ms")
         raw = "\n".join(text_chunks) if text_chunks else "(no response)"
-        # Decode literal escape sequences some models emit
         raw = raw.replace("\\n", "\n").replace("\\t", "\t")
-        # Return raw markdown so frontend can render bold, lists, tables, etc.
         return raw, new_sid
 
     # Build effective message: user text + image note + extracted document text
@@ -1544,8 +1593,11 @@ async def _run_agent_streaming(
         ClaudeSDKClient,
         ResultMessage,
         TextBlock,
+        ToolUseBlock,
     )
     from claude_agent_sdk.types import StreamEvent
+
+    from agent_trace import session_start as trace_session_start, write as trace_write
 
     agent_cwd = Path(__file__).parent / "cwd"
     agent_cwd.mkdir(exist_ok=True)
@@ -1557,6 +1609,16 @@ async def _run_agent_streaming(
             resume_id=resume_id,
             include_partial_messages=True,
         )
+
+    def _agent_model_keys(options: ClaudeAgentOptions) -> dict[str, str]:
+        """Map agent_name → model keyword for delegation-stack tracking."""
+        out: dict[str, str] = {}
+        if options.agents:
+            for name, agent_def in options.agents.items():
+                model = getattr(agent_def, "model", None)
+                if model:
+                    out[name] = model.lower()
+        return out
 
     effective_message = user_message
     if image_urls:
@@ -1582,10 +1644,14 @@ async def _run_agent_streaming(
             )
 
     async def _execute_streaming(opts: ClaudeAgentOptions, msg: str) -> None:
-        assistant_texts: list[str] = []  # Complete text from AssistantMessage (final reply)
+        assistant_texts: list[str] = []
         sid: str | None = None
         in_tool = False
         current_tool: str | None = None
+        amk = _agent_model_keys(opts)
+        delegation_stack: list[str] = []
+        pending_delegation: str | None = None
+        trace_session_start(session_id, user_message)
 
         async with ClaudeSDKClient(options=opts) as client:
             await client.query(msg)
@@ -1615,11 +1681,42 @@ async def _run_agent_streaming(
                             current_tool = None
 
                 elif isinstance(message, AssistantMessage):
+                    msg_model = (message.model or "").lower()
+                    if pending_delegation:
+                        delegation_stack.append(pending_delegation)
+                        pending_delegation = None
+                    while delegation_stack:
+                        top_model = amk.get(delegation_stack[-1], "")
+                        if top_model and top_model in msg_model:
+                            break
+                        delegation_stack.pop()
+                    agent_label = delegation_stack[-1] if delegation_stack else "Main agent"
+                    trace_write(f"[Agent: {agent_label}]")
                     for block in message.content:
-                        if isinstance(block, TextBlock) and block.text:
+                        if isinstance(block, ToolUseBlock):
+                            if block.name == "Task":
+                                agent_name = (
+                                    (block.input or {}).get("subagent_type")
+                                    or (block.input or {}).get("agent")
+                                    or "subagent"
+                                )
+                                task = str((block.input or {}).get("prompt") or (block.input or {}).get("task") or (block.input or {}).get("description", ""))
+                                task_preview = task[:80] + "..." if len(task) > 80 else task
+                                trace_write(f"  → [Subagent] Delegating to '{agent_name}': {task_preview}")
+                                pending_delegation = agent_name
+                            elif block.name == "WebSearch":
+                                query = (block.input or {}).get("query", "")
+                                trace_write(f"  → [WebSearch] Searching: {query}")
+                            else:
+                                trace_write(f"  → [Tool] {block.name} {block.input}")
+                        elif isinstance(block, TextBlock) and block.text:
+                            if agent_label != "Main agent":
+                                trace_write(f"  --- {agent_label} response ---")
+                            trace_write(block.text)
                             assistant_texts.append(block.text)
                 elif isinstance(message, ResultMessage):
                     sid = message.session_id
+                    trace_write(f"[Result] turns={message.num_turns} duration={message.duration_ms}ms")
 
         raw = "\n".join(assistant_texts) if assistant_texts else "(no response)"
         raw = raw.replace("\\n", "\n").replace("\\t", "\t")

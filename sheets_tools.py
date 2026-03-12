@@ -177,7 +177,10 @@ def _get_credentials(user_id: int) -> Credentials:
         pass
 
     if creds.expired and creds.refresh_token:
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except Exception:
+            raise
         refreshed_expiry = (
             creds.expiry.replace(tzinfo=None).isoformat()
             if creds.expiry
@@ -190,6 +193,8 @@ def _get_credentials(user_id: int) -> Credentials:
             token_expiry=refreshed_expiry,
             google_email=token_data["google_email"],
         )
+    else:
+        print(f"[SHEETS DEBUG] Token still valid (not expired)")
 
     return creds
 
@@ -293,13 +298,15 @@ async def create_spreadsheet(args: dict[str, Any]) -> dict[str, Any]:
             "sheets": [{"properties": {"title": sheet_name}}],
         }
         result = svc.spreadsheets().create(body=body).execute()
+        sid = result["spreadsheetId"]
+        url = result["spreadsheetUrl"]
         return {
             "content": [{
                 "type": "text",
                 "text": json.dumps({
-                    "spreadsheet_id": result["spreadsheetId"],
+                    "spreadsheet_id": sid,
                     "title": result["properties"]["title"],
-                    "url": result["spreadsheetUrl"],
+                    "url": url,
                     "sheet_name": sheet_name,
                     "sheet_id": result["sheets"][0]["properties"]["sheetId"],
                 }, indent=2),
