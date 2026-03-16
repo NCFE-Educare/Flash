@@ -28,6 +28,7 @@ from database import (
     delete_drive_tokens,
     delete_gmail_tokens,
     delete_meet_tokens,
+    delete_reminder,
     delete_session,
     delete_sheets_tokens,
     delete_slides_tokens,
@@ -35,9 +36,12 @@ from database import (
     get_calendar_tokens,
     get_docs_tokens,
     get_drive_tokens,
+    get_due_reminders,
     get_gmail_tokens,
     get_meet_tokens,
     get_messages,
+    get_pending_reminders_for_user,
+    get_reminders_for_user,
     get_session,
     get_sessions_for_user,
     get_sheets_tokens,
@@ -45,6 +49,7 @@ from database import (
     get_forms_tokens,
     get_user_by_email,
     init_db,
+    mark_reminder_delivered,
     rename_session,
     save_claude_session_id,
 )
@@ -95,7 +100,7 @@ _notification_lock = threading.Lock()
 
 def _broadcast_response_done(user_id: int, session_id: int) -> None:
     """Thread-safe: notify all connected clients that a response is done for this session."""
-    event = {"type": "response_done", "session_id": session_id}
+    event = {"event": "response_done", "type": "response_done", "session_id": session_id}
     with _notification_lock:
         listeners = _notification_listeners.get(user_id, [])
     for q in listeners:
@@ -105,10 +110,41 @@ def _broadcast_response_done(user_id: int, session_id: int) -> None:
             pass
 
 
+def _broadcast_reminder(user_id: int, reminder: dict) -> None:
+    """Thread-safe: push a reminder to all connected clients for this user."""
+    event = {
+        "event": "reminder",
+        "type": "reminder",
+        "reminder_id": reminder["id"],
+        "message": reminder["message"],
+        "remind_at": reminder["remind_at"],
+    }
+    with _notification_lock:
+        listeners = _notification_listeners.get(user_id, [])
+    for q in listeners:
+        try:
+            q.put(event)
+        except Exception:
+            pass
+
+
+def _run_reminder_worker() -> None:
+    """Check for due reminders and push them to connected clients."""
+    due = get_due_reminders()
+    for r in due:
+        user_id = r["user_id"]
+        if mark_reminder_delivered(r["id"]):
+            _broadcast_reminder(user_id, r)
+
+
 @app.on_event("startup")
 def on_startup():
     init_db()
     UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    from apscheduler.schedulers.background import BackgroundScheduler
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(_run_reminder_worker, "interval", minutes=1, id="reminder_worker")
+    scheduler.start()
 
 
 # ---------------------------------------------------------------------------
@@ -885,6 +921,87 @@ def forms_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
 
 
 # ---------------------------------------------------------------------------
+# Google Classroom OAuth
+# ---------------------------------------------------------------------------
+
+@app.get("/auth/classroom/connect", tags=["Classroom"])
+def classroom_connect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """
+    Generate the Google OAuth URL for Classroom access.
+    The frontend should open this URL in a browser/popup so the user can
+    grant access. After approval Google redirects to /auth/classroom/callback.
+    """
+    from classroom_tools import get_classroom_auth_url
+    user_id = int(current_user["sub"])
+    try:
+        auth_url = get_classroom_auth_url(user_id)
+        return {"auth_url": auth_url}
+    except ValueError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/auth/classroom/callback", response_class=HTMLResponse, tags=["Classroom"])
+def classroom_callback(code: str, state: str):
+    """
+    Google redirects here after the user approves Classroom access.
+    Exchanges the code for tokens, saves them, and shows a success page.
+    This endpoint does NOT require a JWT — it is called by Google's redirect.
+    """
+    from classroom_tools import exchange_classroom_code
+    result = exchange_classroom_code(code, state)
+    if result:
+        return HTMLResponse(content=f"""
+        <html>
+        <head><title>Google Classroom Connected</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">✅</div>
+                <h2 style="color:#1a73e8;">Google Classroom Connected!</h2>
+                <p style="color:#5f6368;">Account: <strong>{result['email']}</strong></p>
+                <p style="color:#5f6368;font-size:14px;">You can close this window and return to the app.</p>
+            </div>
+        </body>
+        </html>
+        """)
+    return HTMLResponse(
+        content="""
+        <html>
+        <head><title>Connection Failed</title></head>
+        <body style="font-family:sans-serif;text-align:center;padding:60px;background:#f9fafb;">
+            <div style="max-width:400px;margin:auto;background:#fff;border-radius:12px;padding:40px;box-shadow:0 2px 12px rgba(0,0,0,0.08);">
+                <div style="font-size:48px;">❌</div>
+                <h2 style="color:#d93025;">Connection Failed</h2>
+                <p style="color:#5f6368;">Could not connect Google Classroom. Please try again.</p>
+            </div>
+        </body>
+        </html>
+        """,
+        status_code=400,
+    )
+
+
+@app.get("/auth/classroom/status", tags=["Classroom"])
+def classroom_status(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Check whether the logged-in user has connected their Google Classroom account."""
+    from database import get_classroom_tokens
+    user_id = int(current_user["sub"])
+    tokens = get_classroom_tokens(user_id)
+    return {
+        "connected": tokens is not None,
+        "google_email": tokens["google_email"] if tokens else None,
+        "connected_at": tokens["connected_at"] if tokens else None,
+    }
+
+
+@app.delete("/auth/classroom/disconnect", status_code=204, tags=["Classroom"])
+def classroom_disconnect(current_user: Annotated[dict, Depends(get_current_user)]):
+    """Remove the stored Classroom tokens, disconnecting Google Classroom for this user."""
+    from database import delete_classroom_tokens
+    user_id = int(current_user["sub"])
+    delete_classroom_tokens(user_id)
+
+
+# ---------------------------------------------------------------------------
 # Session endpoints
 # ---------------------------------------------------------------------------
 
@@ -1248,10 +1365,10 @@ async def chat_notifications(
     current_user: Annotated[dict, Depends(get_current_user_or_token)],
 ):
     """
-    Server-Sent Events stream for response-done notifications.
-    Connect and keep open. When an agent response completes (in any session),
-    you receive: event: response_done, data: {"type":"response_done","session_id":N}
-    Use this to refresh the session's messages when the user switched away.
+    Server-Sent Events stream for notifications.
+    Connect and keep open. Events:
+    - response_done: agent response completed, data: {"type":"response_done","session_id":N}
+    - reminder: a reminder is due, data: {"type":"reminder","message":"...","remind_at":"...","reminder_id":N}
     Sends a heartbeat every 2s to keep the connection alive.
     """
     user_id = int(current_user["sub"])
@@ -1270,7 +1387,8 @@ async def chat_notifications(
             while True:
                 try:
                     item = my_queue.get(timeout=2)
-                    yield _sse_event("response_done", item)
+                    event_type = item.get("event", item.get("type", "response_done"))
+                    yield _sse_event(event_type, item)
                 except Empty:
                     yield _sse_event("heartbeat", {"ts": str(uuid.uuid4())[:8]})
         finally:
@@ -1291,6 +1409,40 @@ async def chat_notifications(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Reminders API
+# ---------------------------------------------------------------------------
+
+@app.get("/reminders", tags=["Reminders"])
+def list_reminders(
+    current_user: Annotated[dict, Depends(get_current_user)],
+    include_delivered: bool = Query(False, description="Include past/delivered reminders"),
+):
+    """List reminders for the logged-in user."""
+    user_id = int(current_user["sub"])
+    rows = get_reminders_for_user(user_id, include_delivered=include_delivered)
+    return [{"id": r["id"], "remind_at": r["remind_at"], "message": r["message"], "delivered": bool(r["delivered"])} for r in rows]
+
+
+@app.get("/reminders/pending", tags=["Reminders"])
+def list_pending_reminders(current_user: Annotated[dict, Depends(get_current_user)]):
+    """List undelivered reminders (for showing when user opens the app)."""
+    user_id = int(current_user["sub"])
+    rows = get_pending_reminders_for_user(user_id)
+    return [{"id": r["id"], "remind_at": r["remind_at"], "message": r["message"]} for r in rows]
+
+
+@app.delete("/reminders/{reminder_id}", status_code=204, tags=["Reminders"])
+def cancel_reminder(
+    reminder_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Cancel a reminder."""
+    user_id = int(current_user["sub"])
+    if not delete_reminder(reminder_id, user_id):
+        raise HTTPException(status_code=404, detail="Reminder not found")
 
 
 # ---------------------------------------------------------------------------

@@ -437,6 +437,64 @@ forms_agent = AgentDefinition(
 # Google Slides agents
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Google Classroom agent
+# ---------------------------------------------------------------------------
+
+classroom_agent = AgentDefinition(
+    description=(
+        "Use this agent for ANY Google Classroom task: "
+        "listing courses, creating courses, managing coursework (assignments), "
+        "listing/inviting students, listing teachers, announcements, "
+        "viewing/grading student submissions, and managing topics. "
+        "Always include user_id in your task prompt."
+    ),
+    prompt=(
+        "You are a Google Classroom assistant. Extract user_id from the task prompt and pass it "
+        "to EVERY tool call without exception.\n"
+        "Available tools:\n"
+        "- list_courses: list courses (optional role filter: TEACHER/STUDENT, optional course_states)\n"
+        "- get_course: get full details for a course by course_id\n"
+        "- create_course: create a new course (name required; section, description, room optional)\n"
+        "- update_course: update course name/section/description/room/state\n"
+        "- list_coursework: list assignments for a course\n"
+        "- create_coursework: create an assignment (title, description, max_points, due_date, work_type)\n"
+        "- list_students: list enrolled students in a course\n"
+        "- invite_student: invite a student by email to a course\n"
+        "- list_teachers: list teachers in a course\n"
+        "- list_announcements: list announcements for a course\n"
+        "- create_announcement: post an announcement to a course\n"
+        "- list_submissions: list student submissions for a coursework item\n"
+        "- grade_submission: assign a grade to a student submission (and optionally return it)\n"
+        "- list_topics: list topics in a course\n"
+        "- create_topic: create a topic for organizing coursework\n"
+        "Always complete the task fully and return a clear, friendly summary to the user."
+    ),
+    tools=[
+        "mcp__classroom__list_courses",
+        "mcp__classroom__get_course",
+        "mcp__classroom__create_course",
+        "mcp__classroom__update_course",
+        "mcp__classroom__list_coursework",
+        "mcp__classroom__create_coursework",
+        "mcp__classroom__list_students",
+        "mcp__classroom__invite_student",
+        "mcp__classroom__list_teachers",
+        "mcp__classroom__list_announcements",
+        "mcp__classroom__create_announcement",
+        "mcp__classroom__list_submissions",
+        "mcp__classroom__grade_submission",
+        "mcp__classroom__list_topics",
+        "mcp__classroom__create_topic",
+    ],
+    model="haiku",
+)
+
+
+# ---------------------------------------------------------------------------
+# Google Slides agents
+# ---------------------------------------------------------------------------
+
 slides_data_agent = AgentDefinition(
     description=(
         "Use this agent for Google Slides DATA operations: creating presentations, "

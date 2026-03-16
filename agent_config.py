@@ -39,13 +39,15 @@ def make_agent_options(
     """
     from calendar_tools import calendar_tools_server
     from docs_tools import docs_server
+    from reminders_tools import reminders_tools_server
     from drive_tools import drive_server
     from gmail_tools import gmail_tools_server
     from meet_tools import meet_tools_server
     from sheets_tools import sheets_data_server, sheets_format_server, sheets_visual_server
     from forms_tools import forms_server
+    from classroom_tools import classroom_server
     from slides_tools import slides_data_server, slides_format_server
-    from sub_agent import calendar_agent, docs_agent, drive_agent, forms_agent, gmail_agent, meet_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
+    from sub_agent import calendar_agent, classroom_agent, docs_agent, drive_agent, forms_agent, gmail_agent, meet_agent, sheets_data_agent, sheets_format_agent, sheets_visual_agent, slides_agent, slides_data_agent, slides_format_agent
     from tools import my_tools_server
 
     uid = str(user_id) if user_id is not None else None
@@ -94,6 +96,16 @@ def make_agent_options(
             f"- ANY Google Forms task (create form, add questions, list forms, update form, delete questions) → "
             f"delegate to 'forms_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
         )
+        classroom_rule = (
+            f"- ANY Google Classroom task (courses, assignments, students, teachers, announcements, "
+            f"grading, submissions, topics) → "
+            f"delegate to 'classroom_agent' subagent. Always include 'user_id={uid}' in the task prompt.\n"
+        )
+        reminders_rule = (
+            f"- Reminders: Use create_reminder with user_id={uid}. "
+            f"For 'in X seconds/minutes/hours' (e.g. 'remind me in 20 sec', 'in 5 min', 'in 2 hours') — ALWAYS use relative_offset (e.g. '20 seconds', '5 minutes', '2 hours'). Server computes time correctly. "
+            f"For absolute times ('tomorrow at 9am', 'next Monday 3pm') — use remind_at with ISO datetime + timezone (e.g. 2025-03-17T09:00:00+05:30). Default timezone Asia/Kolkata. Do NOT delegate to calendar_agent.\n"
+        )
     else:
         user_context = (
             "NOTE: No logged-in user — ask the user to provide their user_id before "
@@ -141,6 +153,14 @@ def make_agent_options(
             "- ANY Google Forms task (create form, add questions, list forms, update form, delete questions) → "
             "delegate to 'forms_agent' subagent. Always include the user_id in the task prompt.\n"
         )
+        classroom_rule = (
+            "- ANY Google Classroom task (courses, assignments, students, teachers, announcements, "
+            "grading, submissions, topics) → "
+            "delegate to 'classroom_agent' subagent. Always include the user_id in the task prompt.\n"
+        )
+        reminders_rule = (
+            "- Reminders: Use create_reminder. For 'in X sec/min/hr' use relative_offset. For absolute times use remind_at (ISO + timezone). Do NOT delegate to calendar_agent.\n"
+        )
 
     ist = timezone(timedelta(hours=5, minutes=30))
     now = datetime.now(ist)
@@ -180,6 +200,8 @@ def make_agent_options(
         + calendar_rule
         + meet_rule
         + slides_rule
+        + classroom_rule
+        + (reminders_rule if uid else "")
     )
 
     base_tools = ["Skill", "Task", "Bash", "Read", "Write", "WebSearch"]
@@ -199,6 +221,8 @@ def make_agent_options(
         "mcp__slides_data__*",
         "mcp__slides_format__*",
         "mcp__forms__*",
+        "mcp__classroom__*",
+        "mcp__reminders__*",
     ]
 
     kwargs: dict = dict(
@@ -215,6 +239,8 @@ def make_agent_options(
             "slides_data": slides_data_server,
             "slides_format": slides_format_server,
             "forms": forms_server,
+            "classroom": classroom_server,
+            "reminders": reminders_tools_server,
         },
         agents={
             "gmail_agent": gmail_agent,
@@ -229,6 +255,7 @@ def make_agent_options(
             "slides_data_agent": slides_data_agent,
             "slides_format_agent": slides_format_agent,
             "forms_agent": forms_agent,
+            "classroom_agent": classroom_agent,
         },
         tools=base_tools,
         allowed_tools=base_tools + mcp_tool_permissions,

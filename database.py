@@ -1,6 +1,7 @@
 """SQLite database — users, chat sessions, and messages."""
 
 import sqlite3
+from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -133,6 +134,24 @@ def init_db() -> None:
                 token_expiry  TEXT NOT NULL,
                 google_email  TEXT NOT NULL,
                 connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS classroom_tokens (
+                user_id       INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+                access_token  TEXT NOT NULL,
+                refresh_token TEXT NOT NULL,
+                token_expiry  TEXT NOT NULL,
+                google_email  TEXT NOT NULL,
+                connected_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS reminders (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                remind_at    TEXT NOT NULL,
+                message      TEXT NOT NULL,
+                delivered    INTEGER NOT NULL DEFAULT 0,
+                created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
         conn.commit()
@@ -637,5 +656,132 @@ def delete_meet_tokens(user_id: int) -> bool:
     """Remove Meet tokens for a user (disconnect Google Meet)."""
     with _get_conn() as conn:
         cur = conn.execute("DELETE FROM meet_tokens WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Classroom Tokens
+# ---------------------------------------------------------------------------
+
+def save_classroom_tokens(
+    user_id: int,
+    access_token: str,
+    refresh_token: str,
+    token_expiry: str,
+    google_email: str,
+) -> None:
+    """Insert or update Google Classroom OAuth tokens for a user (upsert)."""
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO classroom_tokens (user_id, access_token, refresh_token, token_expiry, google_email)
+            VALUES (?, ?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                access_token  = excluded.access_token,
+                refresh_token = excluded.refresh_token,
+                token_expiry  = excluded.token_expiry,
+                google_email  = excluded.google_email,
+                connected_at  = CURRENT_TIMESTAMP
+            """,
+            (user_id, access_token, refresh_token, token_expiry, google_email),
+        )
+        conn.commit()
+
+
+def get_classroom_tokens(user_id: int) -> dict | None:
+    """Return Classroom token dict for a user, or None if not connected."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM classroom_tokens WHERE user_id = ?", (user_id,))
+
+
+def delete_classroom_tokens(user_id: int) -> bool:
+    """Remove Classroom tokens for a user (disconnect Google Classroom)."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM classroom_tokens WHERE user_id = ?", (user_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Reminders
+# ---------------------------------------------------------------------------
+
+def create_reminder(user_id: int, remind_at: str, message: str) -> dict:
+    """Insert a reminder. remind_at: ISO datetime string. Returns the created row."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO reminders (user_id, remind_at, message) VALUES (?, ?, ?)",
+            (user_id, remind_at, message),
+        )
+        conn.commit()
+        return _row(conn, "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,))
+
+
+def get_reminders_for_user(user_id: int, include_delivered: bool = True) -> list[dict]:
+    """Return reminders for a user, ordered by remind_at ascending."""
+    with _get_conn() as conn:
+        if include_delivered:
+            return _rows(
+                conn,
+                "SELECT * FROM reminders WHERE user_id = ? ORDER BY remind_at ASC",
+                (user_id,),
+            )
+        return _rows(
+            conn,
+            "SELECT * FROM reminders WHERE user_id = ? AND delivered = 0 ORDER BY remind_at ASC",
+            (user_id,),
+        )
+
+
+def get_pending_reminders_for_user(user_id: int) -> list[dict]:
+    """Return undelivered reminders for a user."""
+    return get_reminders_for_user(user_id, include_delivered=False)
+
+
+def get_due_reminders() -> list[dict]:
+    """Return all undelivered reminders whose remind_at is in the past (UTC comparison)."""
+    now = datetime.now(timezone.utc)
+    with _get_conn() as conn:
+        rows = _rows(
+            conn,
+            "SELECT * FROM reminders WHERE delivered = 0 ORDER BY remind_at ASC",
+            (),
+        )
+    result = []
+    for r in rows:
+        try:
+            remind_at_str = r["remind_at"]
+            if "T" in remind_at_str and "+" in remind_at_str:
+                remind_at = datetime.fromisoformat(remind_at_str.replace("Z", "+00:00"))
+            elif "T" in remind_at_str:
+                remind_at = datetime.fromisoformat(remind_at_str).replace(tzinfo=timezone.utc)
+            else:
+                remind_at = datetime.fromisoformat(remind_at_str).replace(tzinfo=timezone.utc)
+            if remind_at <= now:
+                result.append(r)
+        except (ValueError, TypeError):
+            continue
+    return result
+
+
+def mark_reminder_delivered(reminder_id: int) -> bool:
+    """Mark a reminder as delivered. Returns True if updated."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE reminders SET delivered = 1 WHERE id = ?",
+            (reminder_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def delete_reminder(reminder_id: int, user_id: int) -> bool:
+    """Delete a reminder. Enforces ownership. Returns True if deleted."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM reminders WHERE id = ? AND user_id = ?",
+            (reminder_id, user_id),
+        )
         conn.commit()
         return cur.rowcount > 0
