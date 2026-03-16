@@ -4,67 +4,47 @@ import base64
 import os
 from pathlib import Path
 
+# Load .env so MISTRAL_API_KEY is available even when called outside FastAPI startup
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ.setdefault(_k.strip(), _v.strip().strip('"').strip("'"))
+
 # If pypdf extracts less than this many chars, treat PDF as image-based and try OCR
 MIN_TEXT_CHARS_FOR_PDF = 20
-MAX_OCR_PAGES = 20  # Limit OCR pages to avoid long processing (scanned PDFs)
-
-OCR_PROMPT = (
-    "Extract all text from this image. "
-    "Return only the raw text, preserving paragraphs and structure. "
-    "Do not add any commentary or formatting."
-)
 
 
 def _extract_pdf_with_ocr(path: Path) -> str:
-    """Extract text from image-based (scanned) PDF using Claude Vision."""
-    import fitz  # pymupdf
-
-    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    """Extract text from image-based (scanned) PDF using Mistral OCR API."""
+    api_key = os.environ.get("MISTRAL_API_KEY")
     if not api_key:
-        raise RuntimeError("ANTHROPIC_API_KEY not set — required for image-based PDF OCR")
+        raise RuntimeError("MISTRAL_API_KEY not set — required for image-based PDF OCR")
 
-    import anthropic
+    from mistralai.client import Mistral
 
-    client = anthropic.Anthropic(api_key=api_key)
-    doc = fitz.open(path)
-    parts: list[str] = []
-    pages_to_process = min(len(doc), MAX_OCR_PAGES)
+    client = Mistral(api_key=api_key)
 
-    for i in range(pages_to_process):
-        page = doc[i]
-        pix = page.get_pixmap(dpi=150)
-        png_bytes = pix.tobytes("png")
-        b64 = base64.b64encode(png_bytes).decode("utf-8")
+    with open(path, "rb") as f:
+        b64_pdf = base64.b64encode(f.read()).decode("utf-8")
 
-        response = client.messages.create(
-            model="claude-3-5-haiku-20241022",
-            max_tokens=4096,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image",
-                            "source": {
-                                "type": "base64",
-                                "media_type": "image/png",
-                                "data": b64,
-                            },
-                        },
-                        {"type": "text", "text": OCR_PROMPT},
-                    ],
-                }
-            ],
-        )
-        text = ""
-        for block in response.content:
-            if hasattr(block, "text") and block.text:
-                text += block.text
-        text = text.strip()
-        if text:
-            parts.append(text)
+    ocr_response = client.ocr.process(
+        model="mistral-ocr-latest",
+        document={
+            "type": "document_url",
+            "document_url": f"data:application/pdf;base64,{b64_pdf}",
+        },
+    )
 
-    doc.close()
+    pages = getattr(ocr_response, "pages", None) or []
+    parts = []
+    for page in pages:
+        md = getattr(page, "markdown", None) or ""
+        if md.strip():
+            parts.append(md.strip())
+
     return "\n\n".join(parts)
 
 
@@ -105,8 +85,9 @@ def extract_text_from_file(file_path: Path) -> str:
                 ocr_text = _extract_pdf_with_ocr(path)
                 if ocr_text:
                     return ocr_text
-            except Exception:
-                pass
+                return "[OCR returned no text — the document may be blank or unsupported]"
+            except Exception as e:
+                return f"[OCR failed: {e}]"
 
         return text
 

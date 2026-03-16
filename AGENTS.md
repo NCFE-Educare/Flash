@@ -85,5 +85,5 @@ SQLite with tables: `users`, `sessions` (has `claude_session_id`), `messages` (h
 - **`user_id` must be passed** to every sub-agent delegation prompt and every MCP tool call.
 - **Sheets range notation**: data tools use `Sheet1!A1:D10` (with sheet name prefix); formatting tools use `A1:D10` (no prefix). Chart `data_range` uses the prefix.
 - **Agent working directory** is `cwd/` (created at runtime). Uploaded files go to `cwd/uploads/`.
-- **Document parsing** (`document_parser.py`): extracts text from PDF, DOCX, PPTX, TXT. For image-based PDFs, falls back to Claude Vision OCR.
+- **Document parsing** (`document_parser.py`): extracts text from PDF, DOCX, PPTX, TXT. For image-based PDFs, falls back to Mistral OCR (`mistral-ocr-latest` via `MISTRAL_API_KEY`). Returns per-page markdown joined as plain text.
 - Auth uses `bcrypt` + `python-jose` JWTs. Token expiry default is 60 min (configurable via `ACCESS_TOKEN_EXPIRE_MINUTES`).

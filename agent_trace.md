@@ -939,3 +939,183 @@ I'll set up a reminder for you in 20 seconds to pay fees! ⏰
 [Agent: Main agent]
 ✅ **Reminder set!** You'll be reminded to pay fees in 20 seconds (at 1:25:38 PM IST).
 [Result] turns=2 duration=10386ms
+
+======================================================================
+=== Session 59 | 2026-03-16 14:18:55 ===
+
+USER: what is there in the pdf tell me. see i gave you documents okay tell me on 17th how many i have exams till 24th i have to give repeaters for sem4, sem5, sem6. and how to downlload hall ticket and also what all rules are there that i should adhere
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I can see that you've attached a PDF document, but unfortunately **the content appears to be empty or failed to extract** properly. The PDF shows no readable text.
+
+📋 **What I need from you:**
+
+To help you with:
+- ✅ Exam schedule on **17th March**
+- ✅ Repeater exams for **Sem 4, 5, 6** (till 24th)
+- ✅ How to **download hall ticket**
+- ✅ **Rules and regulations** to follow
+
+**Could you please:**
+
+1. **Re-upload the PDF** (sometimes it helps to try again), or
+2. **Share a screenshot** of the important pages, or
+3. **Copy-paste the text** from the PDF directly into the chat, or
+4. **Provide the file path** if it's saved on your computer (e.g., `./exam_notice.pdf`)
+
+Once I can see the content, I'll be able to tell you:
+- 📅 Your exact exam schedule
+- 🎓 Repeater exam details
+- 📥 Hall ticket download process
+- 📜 All important rules and guidelines
+
+Please share the document again, and I'll analyze it immediately! 😊
+[Result] turns=1 duration=14192ms
+
+======================================================================
+=== Session 60 | 2026-03-16 14:25:14 ===
+
+USER: what is there in the document?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I can see that you've attached a PDF file (`4db28247cb0c4a42a478a1fdeec80307.pdf`), but it appears to be **empty** or contains no extractable text content.
+
+This could happen if:
+- 📄 The PDF is blank
+- 🖼️ The PDF contains only images without text
+- 🔒 The PDF has text embedded as images (scanned document)
+- ⚠️ There was an issue during the upload or extraction process
+
+**Would you like to:**
+1. Try uploading the document again?
+2. Share a different document?
+3. Let me know what you're expecting to find in the document so I can help you better?
+
+If the PDF contains images or scanned content that you need me to analyze, please let me know and I can try to help with that!
+[Result] turns=1 duration=9359ms
+
+======================================================================
+=== Session 61 | 2026-03-16 14:31:22 ===
+
+USER: what is there in this document
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+# 📋 Document Summary: **Karnavati University Examination Schedule**
+
+This PDF contains **Theory Repeater Examination schedules** for the **B.Sc. (Hons.)** program at **Unitedworld Institute of Technology**, Karnavati University, scheduled for **March 2026**.
+
+---
+
+## 📅 **Exam Schedules by Semester & Batch**
+
+### **Semester I (Batch 2022)** - Morning Sessions
+- **Problem Solving and Programming using C** - March 24, 10:00 AM – 12:00 PM
+- **Digital Computer Fundamentals** - March 25, 10:00 AM – 12:00 PM
+- **Introduction to Industry 4.0** - March 26, 10:00 AM – 12:00 PM
+- **Professional Ethics (MOOC)** - March 27, 10:00 AM – 12:00 PM
+
+### **Semester I (Batch 2023)** - Afternoon Sessions
+- **English & Communication Skills-1** - March 18, 2:00 PM – 4:00 PM
+- **Environmental Science** - March 19, 2:00 PM – 4:00 PM
+
+### **Semester II (Batch 2023)**
+- **Indian Knowledge System** - March 17, 2:00 PM – 4:00 PM
+
+### **Semester III (Batch 2022)**
+- **Big Data Analytics** - March 24, 2:00 PM – 4:00 PM
+- **Ethical Hacking (MOOC)** - March 25, 2:00 PM – 4:00 PM
+
+### **Semester III (Batch 2023)** - 7 subjects from March 25 to April 1
+
+### **Semester IV (Batch 2023)** - 6 subjects including Machine Learning, Java, Operating Systems, etc.
+
+### **Semester V (Batch 2023)** - 6 subjects including Computer Networks, Cryptography, Game Programming, etc.
+
+### **Semester VI (Batch 2022)** - 5 subjects including Full Stack Development, Large Language Models, UI/UX, etc.
+
+### **Semester VII (Batch 2022)** - 4 subjects including Deep Learning, Cloud Infrastructure, Cryptography
+
+---
+
+## ⚠️ **Important Examination Rules**
+
+✅ **Hall ticket** is mandatory  
+✅ Arrive **15 minutes early**  
+❌ No books, notes, calculators, phones, or electronic devices  
+⏰ **30-minute** late arrival limit  
+⏱️ Minimum **60 minutes** stay in exam hall  
+📍 Seating arrangement announced **2 days before** exams  
+🚫 **Strict malpractice policies** with disciplinary action
+
+---
+
+**Issued by:** Sudhanshu Sharma, Controller of Examinations  
+**Reference Numbers:** KU/Exam/2025-26/114 through 122  
+**Date Issued:** March 02, 2026
+[Result] turns=1 duration=17273ms
+
+======================================================================
+=== Session 61 | 2026-03-16 14:32:43 ===
+
+USER: tell me on 17th how many i have exams till 24th i have to give repeaters for sem4, sem5, sem6. and how to downlload hall ticket and also what all rules are there that i should adehre
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+## 📋 Your Exam Schedule (17th - 24th March 2026)
+
+**⚠️ IMPORTANT: There's a scheduling conflict!**
+
+You have exams for **Sem 4, Sem 5, and Sem 6** between 17th-24th March, but **Sem 4 and Sem 6 exams clash** (both at 10:00 am - 12:00 pm on the same days).
+
+### Daily Breakdown:
+
+| Date | Sem 4 (10 am - 12 pm) | Sem 5 (2 pm - 4 pm) | Sem 6 (10 am - 12 pm) |
+|------|----------------------|---------------------|----------------------|
+| **17th** | Intro to Machine Learning | Computer Networks | ⚠️ Data Processing & Analysis |
+| **18th** | OOP using Java | Cryptography | ⚠️ Full Stack Development |
+| **19th** | Operating Systems | Game Programming | ⚠️ Large Language Models |
+| **20th** | Quantitative Aptitude | Robotics & Automation | ⚠️ Logical Reasoning |
+| **23rd** | Social Media Writing | Logical Reasoning | ⚠️ UI-UX |
+| **24th** | Web Technology | R Programming | — |
+
+**Total: 17 exams** (but 5 clashes between Sem 4 & Sem 6)
+
+---
+
+## 🎫 How to Download Hall Ticket
+
+The document doesn't specify the download process. You should:
+- Check **Karnavati University student portal** or exam portal
+- Look for email notifications from the university
+- Contact **Controller of Examinations office** immediately if not available
+- Hall tickets are **mandatory** - you won't be allowed to sit for exams without them
+
+---
+
+## ✅ Important Rules to Follow
+
+**Before the Exam:**
+- ✅ Arrive **15 minutes before** exam time
+- ✅ Bring your **Hall Ticket** to every exam
+- ❌ Maximum **30 minutes late** = not allowed to enter
+
+**During the Exam:**
+- ❌ **NO** mobile phones, electronic devices, calculators (programmable)
+- ❌ **NO** books, papers, printed/handwritten material
+- ✅ Cannot leave before **60 minutes** have passed
+- ✅ Seating will be notified **2 days before** exams start
+
+**Consequences:**
+- 🚨 **Malpractice = immediate removal** + disciplinary action
+
+---
+
+**🚨 ACTION NEEDED:** Contact the **Controller of Examinations** (Sudhanshu Sharma) immediately about the Sem 4/Sem 6 timing clash!
+[Result] turns=1 duration=28560ms
