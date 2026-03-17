@@ -1,11 +1,16 @@
 """SQLite database — users, chat sessions, and messages."""
 
+import os
 import sqlite3
 from datetime import datetime, timezone
 from contextlib import contextmanager
 from pathlib import Path
 
-DB_PATH = Path(__file__).parent / "educare.db"
+# Use DB_PATH env var for deployment (e.g. /opt/educare/data/educare.db); else project root
+_db_path = os.environ.get("DB_PATH")
+DB_PATH = Path(_db_path) if _db_path else Path(__file__).parent / "educare.db"
+if _db_path:
+    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
 # ---------------------------------------------------------------------------
