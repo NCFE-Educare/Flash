@@ -30,7 +30,8 @@ gmail_agent = AgentDefinition(
         "- add_label: add a label to an email\n"
         "- list_labels: list all available Gmail labels\n"
         "- get_gmail_profile: get the connected Gmail address and mailbox info\n"
-        "Always complete the task fully and return a clear, friendly summary to the user."
+        "Always complete the task fully and return a clear, friendly summary to the user. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__gmail_tools__list_emails",
@@ -86,7 +87,8 @@ sheets_data_agent = AgentDefinition(
         "- sort_range: sort rows by a column\n"
         "- find_and_replace: find and replace text across a sheet\n"
         "When writing values, always pass them as a valid JSON string representing a 2D array. "
-        "Always return the spreadsheet_id and sheet names in your response so downstream agents can use them."
+        "Always return the spreadsheet_id and sheet names in your response so downstream agents can use them. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__sheets_data__create_spreadsheet",
@@ -235,7 +237,8 @@ sheets_agent = AgentDefinition(
 
         "For multi-step tasks, delegate in order. Pass spreadsheet_id and sheet names from earlier results "
         "to the next delegation. Always include user_id in every delegation. "
-        "Return a complete summary with the spreadsheet URL at the end."
+        "Return a complete summary with the spreadsheet URL at the end. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=["Task"],
     model="sonnet",
@@ -261,7 +264,8 @@ docs_agent = AgentDefinition(
         "- insert_text: insert text at a specific index\n"
         "- replace_text: find and replace text\n"
         "- append_text: append text to end of document\n"
-        "Always complete the task fully and return a clear summary with the document URL."
+        "Always complete the task fully and return a clear summary. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__docs__create_document",
@@ -297,7 +301,8 @@ drive_agent = AgentDefinition(
         "- move_file: move file to a folder (file_id, target_folder_id)\n"
         "- rename_file: rename a file (file_id, new_name)\n"
         "- share_file: share with email (share_with_email, role) or make link-shareable (share_with_anyone=true)\n"
-        "Always complete the task and return a clear summary with file names and links."
+        "Always complete the task and return a clear summary with file names and links. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__drive__search_drive",
@@ -336,7 +341,8 @@ meet_agent = AgentDefinition(
         "Use this when the user wants to schedule a meeting, create a Meet link, or start a video call.\n"
         "- get_meet_space: get details of a Meet space by space name or meeting code\n"
         "- get_meet_profile: check which Google account is connected for Meet\n"
-        "Always return the meeting link (meeting_uri) prominently so the user can share it."
+        "Always return the meeting link (meeting_uri) prominently so the user can share it. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__meet__create_meet_space",
@@ -383,7 +389,8 @@ calendar_agent = AgentDefinition(
         "List the conflicting event(s) and ask for an alternate time.\n"
         "2. Only if the slot is FREE: call create_event with add_google_meet=true (always) and attendees='...' (if any were mentioned).\n"
         "3. Return the google_meet_link and calendar event link in your summary.\n"
-        "NEVER skip the conflict check. NEVER create overlapping meetings."
+        "NEVER skip the conflict check. NEVER create overlapping meetings. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__calendar__list_calendars",
@@ -419,7 +426,8 @@ forms_agent = AgentDefinition(
         "For linear_scale: low, high (default 1-5), low_label, high_label optional.\n"
         "- update_form_info: update form title and/or description\n"
         "- delete_form_item: delete a question by 0-based index (use get_form to see order)\n"
-        "Always return the form URL at the end."
+        "Always return the form URL at the end. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__forms__create_form",
@@ -468,7 +476,8 @@ classroom_agent = AgentDefinition(
         "- grade_submission: assign a grade to a student submission (and optionally return it)\n"
         "- list_topics: list topics in a course\n"
         "- create_topic: create a topic for organizing coursework\n"
-        "Always complete the task fully and return a clear, friendly summary to the user."
+        "Always complete the task fully and return a clear, friendly summary to the user. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__classroom__list_courses",
@@ -515,7 +524,8 @@ slides_data_agent = AgentDefinition(
         "- replace_all_text: replace text across the presentation\n"
         "- create_text_box: create a text box on a slide (need slide_object_id)\n"
         "Use get_presentation or get_presentation_info to find objectIds before inserting text or formatting. "
-        "Always return the presentation_id and URL in your response."
+        "Always return the presentation_id and URL in your response. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=[
         "mcp__slides_data__create_presentation",
@@ -584,7 +594,8 @@ slides_agent = AgentDefinition(
         "For multi-step tasks (e.g. create presentation and format it), delegate to slides_data_agent first, "
         "then delegate to slides_format_agent with the presentation_id and objectIds from the first result.\n\n"
 
-        "Always include user_id in every delegation. Return a clear summary with the presentation URL at the end."
+        "Always include user_id in every delegation. Return a clear summary with the presentation URL at the end. "
+        "ALWAYS format every URL as a markdown hyperlink [label](url) — never paste raw URLs."
     ),
     tools=["Task"],
     model="haiku",

@@ -182,7 +182,8 @@ def make_agent_options(
         "- Use bullet lists (- or *) for options, steps, or multiple items.\n"
         "- Use numbered lists (1. 2. 3.) for ordered steps or procedures.\n"
         "- Use markdown tables when presenting structured data (columns/rows).\n"
-        "- Use emojis sparingly (1–3 per response) for clarity — e.g. ✅ 📋 📊 — not in every sentence.\n"
+        "- NEVER use emojis. Not even one. Responses must be plain text and markdown only — no emoji characters whatsoever.\n"
+        "- ALWAYS format every URL as a markdown hyperlink: [descriptive label](url). NEVER paste a raw URL. Every link must be clickable — no exceptions.\n"
         "- Keep responses concise and friendly. Avoid walls of text.\n"
 
         "\n=== WEB SEARCH ===\n"
