@@ -52,6 +52,25 @@ def make_agent_options(
 
     uid = str(user_id) if user_id is not None else None
 
+    # ── Long-term memory: fetch stored facts from Mem0 Platform ─────────
+    memory_block = ""
+    if uid:
+        try:
+            from memory import get_all_memories
+            memories = get_all_memories(int(uid))
+            if memories:
+                memory_block = "\n=== LONG-TERM MEMORY (known facts about this user from past sessions) ===\n"
+                for mem in memories:
+                    text = mem.get("memory", "") if isinstance(mem, dict) else str(mem)
+                    if text:
+                        memory_block += f"- {text}\n"
+                memory_block += (
+                    "Use this information naturally in conversation. "
+                    "Do not repeat it back unless the user asks.\n\n"
+                )
+        except Exception as mem_err:
+            print(f"[Mem0] Failed to load memories for user {uid}: {mem_err}")
+
     if uid:
         user_context = f"The current user's ID is: {uid}.\n"
         gmail_rule = (
@@ -169,7 +188,8 @@ def make_agent_options(
     )
 
     system_prompt = (
-        time_context
+        memory_block
+        + time_context
         + f"You are working in a restricted directory. Always use RELATIVE paths "
         f"(e.g. 'test.txt', './report.txt') — never absolute paths like /home/user/ or C:/. "
         f"Your working directory is: {agent_cwd}.\n"

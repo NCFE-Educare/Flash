@@ -1252,6 +1252,16 @@ async def chat(
     if new_claude_session_id:
         save_claude_session_id(session_id, new_claude_session_id)
 
+    # Save conversation exchange to Mem0 long-term memory (best-effort)
+    try:
+        from memory import add_memory
+        add_memory(user_id, [
+            {"role": "user", "content": body.message},
+            {"role": "assistant", "content": reply},
+        ])
+    except Exception:
+        pass
+
     _broadcast_response_done(user_id, session_id)
 
     return ChatResponse(
@@ -1893,6 +1903,16 @@ async def _run_agent_streaming(
         if sid:
             save_claude_session_id(session_id, sid)
 
+        # Save conversation exchange to Mem0 long-term memory (best-effort)
+        try:
+            from memory import add_memory as _mem0_add
+            _mem0_add(user_id, [
+                {"role": "user", "content": user_message},
+                {"role": "assistant", "content": raw},
+            ])
+        except Exception:
+            pass
+
         _broadcast_response_done(user_id, session_id)
 
         for chunk in final_texts:
@@ -1919,3 +1939,62 @@ async def _run_agent_streaming(
     else:
         full_message = _build_context_from_db(history, effective_message)
         await _execute_streaming(_make_options(None), full_message)
+
+
+# ---------------------------------------------------------------------------
+# Long-term memory endpoints (Mem0 Platform)
+# ---------------------------------------------------------------------------
+
+@app.get("/memory")
+async def list_user_memories(current_user: dict = Depends(get_current_user)):
+    """Return all stored long-term memories for the authenticated user."""
+    from memory import get_all_memories
+    user_id = int(current_user["sub"])
+    memories = get_all_memories(user_id)
+    return {"memories": memories}
+
+
+@app.post("/memory/search")
+async def search_user_memories(
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Semantic search over the user's long-term memories."""
+    from memory import search_memory
+    user_id = int(current_user["sub"])
+    query = body.get("query", "")
+    limit = body.get("limit", 10)
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    results = search_memory(user_id, query, limit=limit)
+    return {"results": results}
+
+
+@app.delete("/memory/{memory_id}")
+async def delete_user_memory(
+    memory_id: str,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a specific memory by its Mem0 ID."""
+    from memory import delete_memory
+    ok = delete_memory(memory_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memory not found or delete failed")
+    return {"deleted": True}
+
+
+@app.put("/memory/{memory_id}")
+async def update_user_memory(
+    memory_id: str,
+    body: dict,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update the text content of a specific memory."""
+    from memory import update_memory
+    text = body.get("text", "")
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    ok = update_memory(memory_id, text)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Memory not found or update failed")
+    return {"updated": True}
