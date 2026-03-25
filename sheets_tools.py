@@ -15,7 +15,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, Optional, Tuple
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -23,7 +23,11 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 
 from claude_agent_sdk import create_sdk_mcp_server, tool
-from database import delete_sheets_tokens, get_sheets_tokens, save_sheets_tokens
+from database import (
+    delete_sheets_tokens,
+    get_sheets_tokens,
+    save_sheets_tokens,
+)
 
 # ---------------------------------------------------------------------------
 # Load .env
@@ -55,6 +59,7 @@ SHEETS_SCOPES = [
 os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
 _pending_flows: dict[str, Any] = {}
+_sheet_metadata_cache: dict[str, dict] = {}  # Cache: {spreadsheet_id: {sheet_name: sheet_id, ...}}
 
 
 # ---------------------------------------------------------------------------
@@ -229,39 +234,124 @@ def _col_index(col: str) -> int:
 
 def _a1_to_grid_range(sheet_id: int, range_str: str) -> dict:
     """
-    Convert A1-notation range (e.g. 'A1:D5') to a Sheets API GridRange dict.
+    Convert A1-notation range (e.g. 'A1:D5', 'A:D', '1:5', 'A1') to a Sheets API GridRange dict.
     range_str must NOT include a sheet name prefix.
     """
-    range_str = range_str.strip()
-    match = re.match(
-        r"^([A-Za-z]+)(\d+)(?::([A-Za-z]+)(\d+))?$", range_str
-    )
-    if not match:
-        raise ValueError(f"Cannot parse range '{range_str}' — use A1 notation, e.g. 'A1:D5'")
+    range_str = range_str.strip().upper()
+    grid: dict[str, Any] = {"sheetId": sheet_id}
 
-    sc, sr, ec, er = match.groups()
-    grid: dict[str, Any] = {
-        "sheetId": sheet_id,
-        "startRowIndex": int(sr) - 1,
-        "startColumnIndex": _col_index(sc),
-    }
-    if ec and er:
+    # Full range: A1:D5
+    full_match = re.match(r"^([A-Z]+)(\d+):([A-Z]+)(\d+)$", range_str)
+    if full_match:
+        sc, sr, ec, er = full_match.groups()
+        grid["startRowIndex"] = int(sr) - 1
         grid["endRowIndex"] = int(er)
+        grid["startColumnIndex"] = _col_index(sc)
         grid["endColumnIndex"] = _col_index(ec) + 1
-    else:
+        return grid
+
+    # Column only: A:D
+    col_only = re.match(r"^([A-Z]+):([A-Z]+)$", range_str)
+    if col_only:
+        sc, ec = col_only.groups()
+        grid["startColumnIndex"] = _col_index(sc)
+        grid["endColumnIndex"] = _col_index(ec) + 1
+        return grid
+
+    # Row only: 1:5
+    row_only = re.match(r"^(\d+):(\d+)$", range_str)
+    if row_only:
+        sr, er = row_only.groups()
+        grid["startRowIndex"] = int(sr) - 1
+        grid["endRowIndex"] = int(er)
+        return grid
+
+    # Partial: A1:A or A1:5
+    partial = re.match(r"^([A-Z]+)(\d+):([A-Z]+)?(\d+)?$", range_str)
+    if partial:
+        sc, sr, ec, er = partial.groups()
+        grid["startRowIndex"] = int(sr) - 1
+        grid["startColumnIndex"] = _col_index(sc)
+        if er: grid["endRowIndex"] = int(er)
+        if ec: grid["endColumnIndex"] = _col_index(ec) + 1
+        return grid
+
+    # Single cell: A1
+    single = re.match(r"^([A-Z]+)(\d+)$", range_str)
+    if single:
+        sc, sr = single.groups()
+        grid["startRowIndex"] = int(sr) - 1
         grid["endRowIndex"] = int(sr)
+        grid["startColumnIndex"] = _col_index(sc)
         grid["endColumnIndex"] = _col_index(sc) + 1
-    return grid
+        return grid
+
+    raise ValueError(f"Invalid A1 range: '{range_str}'. Use 'A1:D5', 'A:D', or '1:5'.")
 
 
-def _get_sheet_id(service, spreadsheet_id: str, sheet_name: str) -> int:
-    """Return the integer sheetId for the named worksheet tab."""
-    ss = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    for sheet in ss.get("sheets", []):
-        props = sheet.get("properties", {})
-        if props.get("title") == sheet_name:
-            return int(props["sheetId"])
-    raise ValueError(f"Worksheet '{sheet_name}' not found in spreadsheet '{spreadsheet_id}'")
+def _get_sheet_id_cached(service, spreadsheet_id: str, sheet_name: str) -> int:
+    """
+    Return the integer sheetId for the named worksheet tab.
+    Uses cache to avoid repeated API calls.
+    """
+    if spreadsheet_id not in _sheet_metadata_cache:
+        try:
+            ss = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+            metadata: dict = {}
+            for sheet in ss.get("sheets", []):
+                props = sheet.get("properties", {})
+                metadata[props.get("title")] = props.get("sheetId")
+            _sheet_metadata_cache[spreadsheet_id] = metadata
+        except Exception as e:
+            raise ValueError(f"Could not fetch sheet metadata: {e}")
+
+    cache = _sheet_metadata_cache[spreadsheet_id]
+    if sheet_name not in cache:
+        raise ValueError(
+            f"Sheet '{sheet_name}' not found. Available sheets: {', '.join(cache.keys())}"
+        )
+    return cache[sheet_name]
+
+
+def _clear_cache(spreadsheet_id: str) -> None:
+    """Clear cached metadata when sheets are added/deleted/renamed."""
+    _sheet_metadata_cache.pop(spreadsheet_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Validation utilities
+# ---------------------------------------------------------------------------
+
+def _validate_required(args: dict, *keys: str) -> None:
+    """Raise ValueError if any required keys are missing or empty."""
+    missing = [k for k in keys if k not in args or not str(args.get(k, "")).strip()]
+    if missing:
+        raise ValueError(f"Missing required parameter(s): {', '.join(missing)}")
+
+
+def _validate_a1_notation(range_str: str) -> None:
+    """Validate that a range is in A1 notation (no sheet name)."""
+    if "!" in range_str:
+        raise ValueError(
+            f"Range '{range_str}' includes sheet name. Use only the cell notation (e.g., 'A1:D10'), "
+            "not 'Sheet1!A1:D10'."
+        )
+
+
+def _validate_full_a1_notation(range_str: str) -> Tuple[str, str]:
+    """
+    Validate and parse a full A1 range with sheet name (e.g., 'Sheet1!A1:D10').
+    Returns (sheet_name, range_without_sheet_name).
+    """
+    if "!" not in range_str:
+        raise ValueError(
+            f"Range '{range_str}' must include sheet name (e.g., 'Sheet1!A1:D10')"
+        )
+    parts = range_str.split("!", 1)
+    sheet_name = parts[0].strip("'\"")
+    cell_range = parts[1]
+    _validate_a1_notation(cell_range)
+    return sheet_name, cell_range
 
 
 def _batch_update(service, spreadsheet_id: str, requests: list) -> dict:
@@ -279,18 +369,25 @@ def _batch_update(service, spreadsheet_id: str, requests: list) -> dict:
 @tool(
     "create_spreadsheet",
     (
-        "Create a new Google Spreadsheet with a given title. "
-        "Optionally specify the first worksheet name (default: 'Sheet1'). "
-        "Returns the spreadsheet_id and URL. "
-        "user_id: required. title: required. sheet_name: optional (default 'Sheet1')."
+        "Create a new Google Spreadsheet. "
+        "REQUIRED: user_id, title. OPTIONAL: sheet_name (default 'Sheet1'). "
+        "RETURNS: spreadsheet_id, url, sheet_id. "
+        "USE THIS: when starting fresh. "
+        "EXAMPLE: user_id=123, title='Q4 Sales Report', sheet_name='2024 Q4'."
     ),
     {"user_id": int, "title": str, "sheet_name": str},
 )
 async def create_spreadsheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "title")
         user_id = int(args["user_id"])
-        title = str(args["title"])
-        sheet_name = str(args.get("sheet_name", "Sheet1"))
+        title = str(args["title"]).strip()
+        sheet_name = str(args.get("sheet_name", "Sheet1")).strip()
+
+        if not title:
+            return {"content": [{"type": "text", "text": "Error: title cannot be empty."}]}
+        if not sheet_name:
+            sheet_name = "Sheet1"
 
         svc = _sheets(user_id)
         body = {
@@ -299,19 +396,23 @@ async def create_spreadsheet(args: dict[str, Any]) -> dict[str, Any]:
         }
         result = svc.spreadsheets().create(body=body).execute()
         sid = result["spreadsheetId"]
-        url = result["spreadsheetUrl"]
+        _clear_cache(sid)
+
         return {
             "content": [{
                 "type": "text",
                 "text": json.dumps({
+                    "success": True,
                     "spreadsheet_id": sid,
                     "title": result["properties"]["title"],
-                    "url": url,
+                    "url": result["spreadsheetUrl"],
                     "sheet_name": sheet_name,
                     "sheet_id": result["sheets"][0]["properties"]["sheetId"],
                 }, indent=2),
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error creating spreadsheet: {e}"}]}
 
@@ -320,14 +421,15 @@ async def create_spreadsheet(args: dict[str, Any]) -> dict[str, Any]:
     "list_spreadsheets",
     (
         "List the user's Google Spreadsheets from Drive. "
-        "max_results: optional int (default 20). "
-        "Returns id, name, last modified, and URL for each. "
-        "user_id: required."
+        "REQUIRED: user_id. OPTIONAL: max_results (default 20). "
+        "RETURNS: list of spreadsheets (id, name, modified, url). "
+        "EXAMPLE: user_id=123, max_results=10."
     ),
     {"user_id": int, "max_results": int},
 )
 async def list_spreadsheets(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id")
         user_id = int(args["user_id"])
         max_results = int(args.get("max_results", 20))
 
@@ -355,6 +457,8 @@ async def list_spreadsheets(args: dict[str, Any]) -> dict[str, Any]:
             for f in files
         ]
         return {"content": [{"type": "text", "text": json.dumps(sheets, indent=2)}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error listing spreadsheets: {e}"}]}
 
@@ -362,17 +466,19 @@ async def list_spreadsheets(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "get_spreadsheet_info",
     (
-        "Get metadata about a spreadsheet: worksheet names, their sheetIds, "
-        "row/column counts, and the spreadsheet title. "
-        "Use this before formatting or charting to get the sheetId for a worksheet. "
-        "user_id: required. spreadsheet_id: required."
+        "Get all worksheet names, their IDs, and dimensions. "
+        "REQUIRED: user_id, spreadsheet_id. "
+        "RETURNS: worksheet metadata (names, IDs, row/column counts). "
+        "USE THIS: BEFORE formatting or charting (to get sheetIds). "
+        "EXAMPLE: Before format_cells, call this first to get sheet_id."
     ),
     {"user_id": int, "spreadsheet_id": str},
 )
 async def get_spreadsheet_info(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
 
         svc = _sheets(user_id)
         ss = svc.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
@@ -393,25 +499,38 @@ async def get_spreadsheet_info(args: dict[str, Any]) -> dict[str, Any]:
             ],
         }
         return {"content": [{"type": "text", "text": json.dumps(info, indent=2)}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error getting spreadsheet info: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "read_sheet",
     (
-        "Read cell values from a spreadsheet range. "
-        "range: A1 notation including sheet name, e.g. 'Sheet1!A1:D10' or 'Sheet1!A:D'. "
-        "Returns a 2D array of values. "
-        "user_id: required. spreadsheet_id: required. range: required."
+        "Read cell values from a range. "
+        "REQUIRED: user_id, spreadsheet_id, range (with sheet name, e.g. 'Sheet1!A1:D10'). "
+        "RETURNS: 2D array of values. "
+        "USE THIS: to inspect data before modifying. "
+        "EXAMPLE: range='Sales!A1:C100' reads rows 1-100 from 'Sales' sheet."
     ),
     {"user_id": int, "spreadsheet_id": str, "range": str},
 )
 async def read_sheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        range_ = str(args["range"]).strip()
+
+        # Validate range format
+        if "!" not in range_:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: range must include sheet name (e.g., 'Sheet1!A1:D10'), got '{range_}'"
+                }]
+            }
 
         svc = _sheets(user_id)
         result = (
@@ -424,9 +543,15 @@ async def read_sheet(args: dict[str, Any]) -> dict[str, Any]:
         return {
             "content": [{
                 "type": "text",
-                "text": json.dumps({"range": result.get("range", range_), "values": values}, indent=2),
+                "text": json.dumps({
+                    "range": result.get("range", range_),
+                    "row_count": len(values),
+                    "values": values
+                }, indent=2),
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error reading sheet: {e}"}]}
 
@@ -434,32 +559,42 @@ async def read_sheet(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "write_sheet",
     (
-        "Write (overwrite) values to a spreadsheet range. "
-        "range: A1 notation including sheet name, e.g. 'Sheet1!A1'. "
-        "values: a JSON string representing a 2D array, e.g. "
-        "'[[\"Name\",\"Score\"],[\"Alice\",95],[\"Bob\",87]]'. "
-        "user_id: required. spreadsheet_id: required. range: required. values: required."
+        "Write (overwrite) values to a range. REPLACES existing data. "
+        "REQUIRED: user_id, spreadsheet_id, range (with sheet name, e.g. 'Sheet1!A1'), values (JSON 2D array). "
+        "RETURNS: number of rows/columns written. "
+        "⚠️  WARNING: This OVERWRITES data. Use append_rows to ADD rows instead. "
+        "EXAMPLE: range='Sheet1!A1', values='[[\"Name\",\"Score\"],[\"Alice\",95]]' writes a 2×2 table."
     ),
     {"user_id": int, "spreadsheet_id": str, "range": str, "values": str},
 )
 async def write_sheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "range", "values")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        range_ = str(args["range"]).strip()
+
+        if "!" not in range_:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: range must include sheet name (e.g., 'Sheet1!A1'), got '{range_}'"
+                }]
+            }
 
         raw = args["values"]
         if isinstance(raw, list):
-            # Already parsed (SDK passed a real list)
             values = raw
         else:
-            raw_str = str(raw)
+            raw_str = str(raw).strip()
             try:
                 values = json.loads(raw_str)
             except (json.JSONDecodeError, ValueError):
-                # Fall back to ast for Python-style lists with single quotes
                 import ast
                 values = ast.literal_eval(raw_str)
+
+        if not isinstance(values, list):
+            return {"content": [{"type": "text", "text": "Error: values must be a 2D array (list of lists)"}]}
 
         svc = _sheets(user_id)
         result = (
@@ -477,42 +612,48 @@ async def write_sheet(args: dict[str, Any]) -> dict[str, Any]:
             "content": [{
                 "type": "text",
                 "text": (
-                    f"Written {result.get('updatedRows', 0)} rows × "
+                    f"✓ Written {result.get('updatedRows', 0)} rows × "
                     f"{result.get('updatedColumns', 0)} columns to {result.get('updatedRange', range_)}."
                 ),
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error writing to sheet: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "append_rows",
     (
-        "Append new rows to the bottom of existing data in a sheet. "
-        "range: sheet name or full A1 range (the API finds the first empty row automatically), "
-        "e.g. 'Sheet1' or 'Sheet1!A:D'. "
-        "values: JSON string of a 2D array, e.g. '[[\"Alice\",95],[\"Bob\",87]]'. "
-        "user_id: required. spreadsheet_id: required. range: required. values: required."
+        "Append new rows to the bottom of existing data. Automatically finds the first empty row. "
+        "REQUIRED: user_id, spreadsheet_id, range (sheet name, e.g. 'Sheet1'), values (JSON 2D array). "
+        "RETURNS: number of rows appended. "
+        "USE THIS: to add records without overwriting existing data. "
+        "EXAMPLE: range='Sales', values='[[\"2024-01-15\",\"Widget\",50]]' adds one row at the bottom."
     ),
     {"user_id": int, "spreadsheet_id": str, "range": str, "values": str},
 )
 async def append_rows(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "range", "values")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        range_ = str(args["range"]).strip()
 
         raw = args["values"]
         if isinstance(raw, list):
             values = raw
         else:
-            raw_str = str(raw)
+            raw_str = str(raw).strip()
             try:
                 values = json.loads(raw_str)
             except (json.JSONDecodeError, ValueError):
                 import ast
                 values = ast.literal_eval(raw_str)
+
+        if not isinstance(values, list):
+            return {"content": [{"type": "text", "text": "Error: values must be a 2D array"}]}
 
         svc = _sheets(user_id)
         result = (
@@ -532,35 +673,245 @@ async def append_rows(args: dict[str, Any]) -> dict[str, Any]:
             "content": [{
                 "type": "text",
                 "text": (
-                    f"Appended {updates.get('updatedRows', len(values))} rows to "
+                    f"✓ Appended {updates.get('updatedRows', len(values))} rows to "
                     f"{updates.get('updatedRange', range_)}."
                 ),
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error appending rows: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
+
+
+@tool(
+    "insert_rows",
+    (
+        "Insert blank rows at a specific position. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, insert_index (0-based row), count (how many rows). "
+        "RETURNS: success message. "
+        "USE THIS: to make room for new data in the middle of a sheet. "
+        "EXAMPLE: insert_index=2, count=3 inserts 3 blank rows at row 3."
+    ),
+    {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "insert_index": int, "count": int},
+)
+async def insert_rows(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
+        user_id = int(args["user_id"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        insert_index = int(args.get("insert_index", 0))
+        count = int(args.get("count", 1))
+
+        if count < 1:
+            return {"content": [{"type": "text", "text": "Error: count must be at least 1"}]}
+
+        svc = _sheets(user_id)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+
+        _batch_update(svc, spreadsheet_id, [{
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": insert_index,
+                    "endIndex": insert_index + count,
+                }
+            }
+        }])
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✓ Inserted {count} row(s) at position {insert_index} in '{sheet_name}'."
+            }]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
+
+
+@tool(
+    "delete_rows",
+    (
+        "Delete rows from a sheet. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, start_row (1-based), end_row (1-based, inclusive). "
+        "RETURNS: success message. "
+        "USE THIS: to remove unwanted rows. "
+        "EXAMPLE: start_row=5, end_row=7 deletes rows 5, 6, and 7."
+    ),
+    {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "start_row": int, "end_row": int},
+)
+async def delete_rows(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "start_row", "end_row")
+        user_id = int(args["user_id"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        start_row = int(args["start_row"])
+        end_row = int(args["end_row"])
+
+        if start_row < 1 or end_row < 1 or start_row > end_row:
+            return {"content": [{"type": "text", "text": "Error: start_row and end_row must be positive, start ≤ end"}]}
+
+        svc = _sheets(user_id)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+
+        _batch_update(svc, spreadsheet_id, [{
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "ROWS",
+                    "startIndex": start_row - 1,  # 0-based
+                    "endIndex": end_row,  # exclusive
+                }
+            }
+        }])
+        count = end_row - start_row + 1
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✓ Deleted {count} row(s) (rows {start_row}-{end_row}) from '{sheet_name}'."
+            }]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
+
+
+@tool(
+    "insert_columns",
+    (
+        "Insert blank columns at a specific position. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, insert_index (0-based column), count. "
+        "RETURNS: success message. "
+        "USE THIS: to add new data columns in the middle. "
+        "EXAMPLE: insert_index=2, count=2 inserts 2 blank columns at column C."
+    ),
+    {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "insert_index": int, "count": int},
+)
+async def insert_columns(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
+        user_id = int(args["user_id"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        insert_index = int(args.get("insert_index", 0))
+        count = int(args.get("count", 1))
+
+        if count < 1:
+            return {"content": [{"type": "text", "text": "Error: count must be at least 1"}]}
+
+        svc = _sheets(user_id)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+
+        _batch_update(svc, spreadsheet_id, [{
+            "insertDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": insert_index,
+                    "endIndex": insert_index + count,
+                }
+            }
+        }])
+        col_letter = chr(65 + insert_index) if insert_index < 26 else f"({insert_index})"
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✓ Inserted {count} column(s) at position {col_letter} in '{sheet_name}'."
+            }]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
+
+
+@tool(
+    "delete_columns",
+    (
+        "Delete columns from a sheet. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, start_col (1-based), end_col (1-based, inclusive). "
+        "RETURNS: success message. "
+        "USE THIS: to remove unwanted columns. "
+        "EXAMPLE: start_col=3, end_col=5 deletes columns C, D, E."
+    ),
+    {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "start_col": int, "end_col": int},
+)
+async def delete_columns(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "start_col", "end_col")
+        user_id = int(args["user_id"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        start_col = int(args["start_col"])
+        end_col = int(args["end_col"])
+
+        if start_col < 1 or end_col < 1 or start_col > end_col:
+            return {"content": [{"type": "text", "text": "Error: column indices must be positive"}]}
+
+        svc = _sheets(user_id)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+
+        _batch_update(svc, spreadsheet_id, [{
+            "deleteDimension": {
+                "range": {
+                    "sheetId": sheet_id,
+                    "dimension": "COLUMNS",
+                    "startIndex": start_col - 1,  # 0-based
+                    "endIndex": end_col,  # exclusive
+                }
+            }
+        }])
+        count = end_col - start_col + 1
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✓ Deleted {count} column(s) from '{sheet_name}'."
+            }]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
+    except Exception as e:
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "clear_range",
     (
         "Clear all values from a range (keeps formatting). "
-        "range: A1 notation including sheet name, e.g. 'Sheet1!A1:D100'. "
-        "user_id: required. spreadsheet_id: required. range: required."
+        "REQUIRED: user_id, spreadsheet_id, range (with sheet name, e.g. 'Sheet1!A1:D100'). "
+        "RETURNS: success message. "
+        "USE THIS: to wipe data without losing colors/borders. "
+        "EXAMPLE: range='Sheet1!A2:Z100' clears everything below header."
     ),
     {"user_id": int, "spreadsheet_id": str, "range": str},
 )
 async def clear_range(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        range_ = str(args["range"]).strip()
+
+        if "!" not in range_:
+            return {
+                "content": [{
+                    "type": "text",
+                    "text": f"Error: range must include sheet name (e.g., 'Sheet1!A1'), got '{range_}'"
+                }]
+            }
 
         svc = _sheets(user_id)
         svc.spreadsheets().values().clear(
             spreadsheetId=spreadsheet_id, range=range_, body={}
         ).execute()
-        return {"content": [{"type": "text", "text": f"Cleared range {range_}."}]}
+        return {"content": [{"type": "text", "text": f"✓ Cleared values in range {range_}."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error clearing range: {e}"}]}
 
@@ -568,17 +919,19 @@ async def clear_range(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "add_worksheet",
     (
-        "Add a new worksheet tab to an existing spreadsheet. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "rows: optional int (default 1000). cols: optional int (default 26)."
+        "Add a new worksheet tab to a spreadsheet. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name. OPTIONAL: rows (default 1000), cols (26). "
+        "RETURNS: sheet_id. "
+        "EXAMPLE: user_id=123, spreadsheet_id=abc, sheet_name='Summary'."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "rows": int, "cols": int},
 )
 async def add_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
         rows = int(args.get("rows", 1000))
         cols = int(args.get("cols", 26))
 
@@ -592,16 +945,19 @@ async def add_worksheet(args: dict[str, Any]) -> dict[str, Any]:
             }
         }])
         new_props = result["replies"][0]["addSheet"]["properties"]
+        _clear_cache(spreadsheet_id)
         return {
             "content": [{
                 "type": "text",
                 "text": json.dumps({
                     "sheet_name": new_props["title"],
                     "sheet_id": new_props["sheetId"],
-                    "message": f"Worksheet '{sheet_name}' added successfully.",
+                    "message": f"✓ Worksheet '{sheet_name}' added successfully.",
                 }, indent=2),
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error adding worksheet: {e}"}]}
 
@@ -609,21 +965,26 @@ async def add_worksheet(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "delete_worksheet",
     (
-        "Delete a worksheet tab from a spreadsheet. WARNING: this is permanent. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required."
+        "Delete a worksheet tab. ⚠️  WARNING: This is permanent. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name. "
+        "RETURNS: success message."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str},
 )
 async def delete_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
         _batch_update(svc, spreadsheet_id, [{"deleteSheet": {"sheetId": sheet_id}}])
-        return {"content": [{"type": "text", "text": f"Worksheet '{sheet_name}' deleted."}]}
+        _clear_cache(spreadsheet_id)
+        return {"content": [{"type": "text", "text": f"✓ Worksheet '{sheet_name}' deleted."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error deleting worksheet: {e}"}]}
 
@@ -632,27 +993,31 @@ async def delete_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     "rename_worksheet",
     (
         "Rename a worksheet tab. "
-        "user_id: required. spreadsheet_id: required. "
-        "old_name: required (current tab name). new_name: required."
+        "REQUIRED: user_id, spreadsheet_id, old_name, new_name. "
+        "RETURNS: success message."
     ),
     {"user_id": int, "spreadsheet_id": str, "old_name": str, "new_name": str},
 )
 async def rename_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "old_name", "new_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        old_name = str(args["old_name"])
-        new_name = str(args["new_name"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        old_name = str(args["old_name"]).strip()
+        new_name = str(args["new_name"]).strip()
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, old_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, old_name)
         _batch_update(svc, spreadsheet_id, [{
             "updateSheetProperties": {
                 "properties": {"sheetId": sheet_id, "title": new_name},
                 "fields": "title",
             }
         }])
-        return {"content": [{"type": "text", "text": f"Worksheet renamed from '{old_name}' to '{new_name}'."}]}
+        _clear_cache(spreadsheet_id)
+        return {"content": [{"type": "text", "text": f"✓ Worksheet renamed from '{old_name}' to '{new_name}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error renaming worksheet: {e}"}]}
 
@@ -660,21 +1025,22 @@ async def rename_worksheet(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "duplicate_worksheet",
     (
-        "Duplicate an existing worksheet tab within the same spreadsheet. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "new_name: optional (defaults to 'Copy of <sheet_name>')."
+        "Duplicate an existing worksheet tab. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name. OPTIONAL: new_name. "
+        "RETURNS: metadata about the new sheet."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "new_name": str},
 )
 async def duplicate_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        new_name = str(args.get("new_name", f"Copy of {sheet_name}"))
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        new_name = str(args.get("new_name", f"Copy of {sheet_name}")).strip()
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
         result = _batch_update(svc, spreadsheet_id, [{
             "duplicateSheet": {
                 "sourceSheetId": sheet_id,
@@ -682,12 +1048,15 @@ async def duplicate_worksheet(args: dict[str, Any]) -> dict[str, Any]:
             }
         }])
         new_props = result["replies"][0]["duplicateSheet"]["properties"]
+        _clear_cache(spreadsheet_id)
         return {
             "content": [{
                 "type": "text",
-                "text": f"Worksheet '{sheet_name}' duplicated as '{new_props['title']}' (sheetId={new_props['sheetId']}).",
+                "text": f"✓ Worksheet '{sheet_name}' duplicated as '{new_props['title']}' (sheetId={new_props['sheetId']}).",
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
         return {"content": [{"type": "text", "text": f"Error duplicating worksheet: {e}"}]}
 
@@ -696,30 +1065,26 @@ async def duplicate_worksheet(args: dict[str, Any]) -> dict[str, Any]:
     "sort_range",
     (
         "Sort rows in a range by a specific column. "
-        "range: A1 notation including sheet name, e.g. 'Sheet1!A2:D100' (exclude header row). "
-        "sort_column: 1-based column number to sort by (e.g. 2 = column B). "
-        "ascending: optional bool (default true). "
-        "user_id: required. spreadsheet_id: required. range: required. sort_column: required."
+        "REQUIRED: user_id, spreadsheet_id, range (with sheet name, e.g. 'Sheet1!A2:D100'). "
+        "REQUIRED: sort_column (1-based, e.g. 2 for column B). "
+        "OPTIONAL: ascending (default true). "
+        "TIP: exclude header row from range. "
+        "EXAMPLE: range='Data!A2:E100', sort_column=1, ascending=false."
     ),
     {"user_id": int, "spreadsheet_id": str, "range": str, "sort_column": int, "ascending": bool},
 )
 async def sort_range(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "range", "sort_column")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        range_ = str(args["range"])
-        sort_col = int(args["sort_column"]) - 1  # convert to 0-based
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        range_full = str(args["range"]).strip()
+        sort_col = int(args["sort_column"]) - 1  # 0-based
         ascending = bool(args.get("ascending", True))
 
+        sheet_name, cell_range = _validate_full_a1_notation(range_full)
         svc = _sheets(user_id)
-
-        # Parse sheet name from range
-        if "!" in range_:
-            sheet_name, cell_range = range_.split("!", 1)
-        else:
-            raise ValueError("range must include sheet name, e.g. 'Sheet1!A2:D100'")
-
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
         grid_range = _a1_to_grid_range(sheet_id, cell_range)
 
         _batch_update(svc, spreadsheet_id, [{
@@ -731,44 +1096,53 @@ async def sort_range(args: dict[str, Any]) -> dict[str, Any]:
                 }],
             }
         }])
-        return {"content": [{"type": "text", "text": f"Range '{range_}' sorted by column {sort_col + 1} ({'ascending' if ascending else 'descending'})."}]}
+        return {
+            "content": [{
+                "type": "text",
+                "text": f"✓ Range '{range_full}' sorted by column {sort_col + 1} ({'ascending' if ascending else 'descending'})."
+            }]
+        }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error sorting range: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "find_and_replace",
     (
-        "Find text and replace it across an entire spreadsheet or a specific sheet. "
-        "user_id: required. spreadsheet_id: required. find: required. replacement: required. "
-        "sheet_name: optional — if omitted, searches all sheets. "
-        "match_case: optional bool (default false). match_entire_cell: optional bool (default false)."
+        "Find and replace text across a spreadsheet. "
+        "REQUIRED: user_id, spreadsheet_id, find, replacement. "
+        "OPTIONAL: sheet_name (searches all if omitted). "
+        "RETURNS: number of occurrences changed. "
+        "EXAMPLE: find='Old Name', replacement='New Name', sheet_name='Contacts'."
     ),
     {"user_id": int, "spreadsheet_id": str, "find": str, "replacement": str,
      "sheet_name": str, "match_case": bool, "match_entire_cell": bool},
 )
 async def find_and_replace(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "find", "replacement")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        find = str(args["find"])
-        replacement = str(args["replacement"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        find_text = str(args["find"]).strip()
+        replacement_text = str(args["replacement"])
         match_case = bool(args.get("match_case", False))
         match_entire_cell = bool(args.get("match_entire_cell", False))
 
         svc = _sheets(user_id)
-
         req: dict[str, Any] = {
-            "find": find,
-            "replacement": replacement,
+            "find": find_text,
+            "replacement": replacement_text,
             "matchCase": match_case,
             "matchEntireCell": match_entire_cell,
             "searchByRegex": False,
             "includeFormulas": False,
         }
 
-        if "sheet_name" in args and args["sheet_name"]:
-            sheet_id = _get_sheet_id(svc, spreadsheet_id, str(args["sheet_name"]))
+        if "sheet_name" in args and str(args["sheet_name"]).strip():
+            sheet_name = str(args["sheet_name"]).strip()
+            sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
             req["range"] = {"sheetId": sheet_id}
 
         result = _batch_update(svc, spreadsheet_id, [{"findReplace": req}])
@@ -776,11 +1150,13 @@ async def find_and_replace(args: dict[str, Any]) -> dict[str, Any]:
         return {
             "content": [{
                 "type": "text",
-                "text": f"Replaced {stats.get('occurrencesChanged', 0)} occurrence(s) of '{find}' with '{replacement}'.",
+                "text": f"✓ Replaced {stats.get('occurrencesChanged', 0)} occurrence(s) of '{find_text}' with '{replacement_text}'."
             }]
         }
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error in find/replace: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 # ---------------------------------------------------------------------------
@@ -790,32 +1166,27 @@ async def find_and_replace(args: dict[str, Any]) -> dict[str, Any]:
 @tool(
     "format_cells",
     (
-        "Apply visual formatting to a cell range: background color, text color, bold, italic, "
-        "font size, font family, strikethrough, underline. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required (e.g. 'Sheet1'). "
-        "range: required — A1 notation WITHOUT sheet prefix, e.g. 'A1:D1' or 'A1'. "
-        "background_color: optional hex string e.g. '#4285F4'. "
-        "text_color: optional hex string e.g. '#FFFFFF'. "
-        "bold: optional bool. italic: optional bool. strikethrough: optional bool. "
-        "underline: optional bool. font_size: optional int (points, e.g. 12). "
-        "font_family: optional string e.g. 'Arial', 'Roboto', 'Courier New'."
+        "Apply colors, fonts, and styles to a range. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range (A1 notation WITHOUT sheet name). "
+        "OPTIONAL: background_color (#hex), text_color (#hex), bold, italic, font_size, font_family. "
+        "EXAMPLE: sheet_name='Sales', range='A1:D1', background_color='#4285F4', bold=true."
     ),
-    {
-        "user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str,
-        "background_color": str, "text_color": str, "bold": bool, "italic": bool,
-        "strikethrough": bool, "underline": bool, "font_size": int, "font_family": str,
-    },
+    {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str,
+     "background_color": str, "text_color": str, "bold": bool, "italic": bool,
+     "strikethrough": bool, "underline": bool, "font_size": int, "font_family": str},
 )
 async def format_cells(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         cell_fmt: dict[str, Any] = {}
         fields_list: list[str] = []
@@ -845,7 +1216,7 @@ async def format_cells(args: dict[str, Any]) -> dict[str, Any]:
             fields_list.append("userEnteredFormat.textFormat")
 
         if not fields_list:
-            return {"content": [{"type": "text", "text": "No formatting options provided — nothing changed."}]}
+            return {"content": [{"type": "text", "text": "Validation Error: No formatting options provided."}]}
 
         _batch_update(svc, spreadsheet_id, [{
             "repeatCell": {
@@ -854,38 +1225,40 @@ async def format_cells(args: dict[str, Any]) -> dict[str, Any]:
                 "fields": ",".join(fields_list),
             }
         }])
-        return {"content": [{"type": "text", "text": f"Formatting applied to {sheet_name}!{range_}."}]}
+        return {"content": [{"type": "text", "text": f"✓ Formatting applied to '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error formatting cells: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "set_borders",
     (
-        "Add borders to a cell range. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "range: required — A1 notation WITHOUT sheet prefix, e.g. 'A1:D10'. "
-        "sides: optional — comma-separated sides: 'top', 'bottom', 'left', 'right', "
-        "'inner_horizontal', 'inner_vertical'. Use 'all' for all sides (default). "
-        "style: optional — 'SOLID' (default), 'SOLID_MEDIUM', 'SOLID_THICK', 'DOUBLE', 'DOTTED', 'DASHED', 'NONE'. "
-        "color: optional hex color (default '#000000')."
+        "Add borders to a range. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range (A1 notation WITHOUT sheet name). "
+        "OPTIONAL: sides ('all', 'outer', 'inner', 'top', etc.), style ('SOLID', 'DOUBLE'), color (#hex). "
+        "EXAMPLE: sides='outer', style='SOLID_MEDIUM', color='#000000'."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str,
      "sides": str, "style": str, "color": str},
 )
 async def set_borders(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
+
         sides_str = str(args.get("sides", "all")).lower()
         style = str(args.get("style", "SOLID")).upper()
         color = _hex_to_color(str(args.get("color", "#000000")))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         border_obj = {"style": style, "color": color}
         no_border = {"style": "NONE"}
@@ -895,7 +1268,7 @@ async def set_borders(args: dict[str, Any]) -> dict[str, Any]:
             active = all_sides
         elif sides_str == "outer":
             active = {"top", "bottom", "left", "right"}
-        elif sides_str == "inner":
+        elif sides_str in ("inner", "inside"):
             active = {"inner_horizontal", "inner_vertical"}
         else:
             active = {s.strip() for s in sides_str.split(",")}
@@ -909,135 +1282,138 @@ async def set_borders(args: dict[str, Any]) -> dict[str, Any]:
             border_req[api_key] = border_obj if side in active else no_border
 
         _batch_update(svc, spreadsheet_id, [{"updateBorders": border_req}])
-        return {"content": [{"type": "text", "text": f"Borders ({sides_str}, {style}) applied to {sheet_name}!{range_}."}]}
+        return {"content": [{"type": "text", "text": f"✓ Borders ({sides_str}) applied to '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error setting borders: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "merge_cells",
     (
-        "Merge a range of cells into a single cell. "
-        "merge_type: optional — 'MERGE_ALL' (default), 'MERGE_COLUMNS' (merge each column), "
-        "'MERGE_ROWS' (merge each row). "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "range: required — A1 notation WITHOUT sheet prefix."
+        "Merge multiple cells into one. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range (A1 notation WITHOUT sheet name). "
+        "OPTIONAL: merge_type ('MERGE_ALL', 'MERGE_COLUMNS', 'MERGE_ROWS'). "
+        "EXAMPLE: range='A1:D1', merge_type='MERGE_ALL'."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str, "merge_type": str},
 )
 async def merge_cells(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
         merge_type = str(args.get("merge_type", "MERGE_ALL")).upper()
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         _batch_update(svc, spreadsheet_id, [{
             "mergeCells": {"range": grid_range, "mergeType": merge_type}
         }])
-        return {"content": [{"type": "text", "text": f"Cells {sheet_name}!{range_} merged ({merge_type})."}]}
+        return {"content": [{"type": "text", "text": f"✓ Cells merged in '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error merging cells: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "unmerge_cells",
     (
-        "Unmerge previously merged cells in a range. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "range: required — A1 notation WITHOUT sheet prefix."
+        "Unmerge cells in a range. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range. "
+        "RETURNS: success message."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str},
 )
 async def unmerge_cells(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         _batch_update(svc, spreadsheet_id, [{"unmergeCells": {"range": grid_range}}])
-        return {"content": [{"type": "text", "text": f"Cells {sheet_name}!{range_} unmerged."}]}
+        return {"content": [{"type": "text", "text": f"✓ Cells unmerged in '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error unmerging cells: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "freeze_rows_columns",
     (
-        "Freeze the top N rows and/or left N columns so they stay visible while scrolling. "
-        "Set frozen_rows=0 or frozen_cols=0 to unfreeze. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "frozen_rows: optional int (default 0). frozen_cols: optional int (default 0)."
+        "Freeze the top N rows or left N columns. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name. OPTIONAL: frozen_rows, frozen_cols. "
+        "RETURNS: success message. "
+        "EXAMPLE: frozen_rows=1 freezes the header row."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "frozen_rows": int, "frozen_cols": int},
 )
 async def freeze_rows_columns(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        frozen_rows = int(args.get("frozen_rows", 0))
-        frozen_cols = int(args.get("frozen_cols", 0))
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        rows = int(args.get("frozen_rows", 0))
+        cols = int(args.get("frozen_cols", 0))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
 
         _batch_update(svc, spreadsheet_id, [{
             "updateSheetProperties": {
                 "properties": {
                     "sheetId": sheet_id,
-                    "gridProperties": {
-                        "frozenRowCount": frozen_rows,
-                        "frozenColumnCount": frozen_cols,
-                    },
+                    "gridProperties": {"frozenRowCount": rows, "frozenColumnCount": cols},
                 },
                 "fields": "gridProperties.frozenRowCount,gridProperties.frozenColumnCount",
             }
         }])
-        parts = []
-        if frozen_rows:
-            parts.append(f"{frozen_rows} row(s)")
-        if frozen_cols:
-            parts.append(f"{frozen_cols} column(s)")
-        msg = f"Frozen {' and '.join(parts)} in '{sheet_name}'." if parts else f"Unfroze all rows/columns in '{sheet_name}'."
-        return {"content": [{"type": "text", "text": msg}]}
+        return {"content": [{"type": "text", "text": f"✓ View frozen in '{sheet_name}' ({rows} rows, {cols} cols)."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error freezing rows/columns: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "set_column_width",
     (
-        "Set the width of one or more columns. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "start_column: required — 1-based column number (e.g. 1 = A, 2 = B). "
-        "end_column: optional — if omitted, only the start column is resized. "
-        "width_pixels: required — width in pixels (e.g. 150)."
+        "Set width of columns in pixels. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, start_column (1-based). "
+        "OPTIONAL: end_column (inclusive), width_pixels (default 100). "
+        "EXAMPLE: start_column=1, end_column=3, width_pixels=150."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str,
      "start_column": int, "end_column": int, "width_pixels": int},
 )
 async def set_column_width(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "start_column")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        start_col = int(args["start_column"]) - 1  # 0-based
-        end_col = int(args.get("end_column", args["start_column"])) # inclusive, stays 1-based for now
-        width = int(args["width_pixels"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        start_col = int(args["start_column"]) - 1
+        end_col = int(args.get("end_column", args["start_column"]))
+        width = int(args.get("width_pixels", 100))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
 
         _batch_update(svc, spreadsheet_id, [{
             "updateDimensionProperties": {
@@ -1045,40 +1421,42 @@ async def set_column_width(args: dict[str, Any]) -> dict[str, Any]:
                     "sheetId": sheet_id,
                     "dimension": "COLUMNS",
                     "startIndex": start_col,
-                    "endIndex": end_col,  # exclusive end
+                    "endIndex": end_col,
                 },
                 "properties": {"pixelSize": width},
                 "fields": "pixelSize",
             }
         }])
-        return {"content": [{"type": "text", "text": f"Column(s) {args['start_column']}–{end_col} set to {width}px in '{sheet_name}'."}]}
+        return {"content": [{"type": "text", "text": f"✓ Column width(s) set to {width}px in '{sheet_name}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error setting column width: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "set_row_height",
     (
-        "Set the height of one or more rows. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "start_row: required — 1-based row number. "
-        "end_row: optional — if omitted, only the start row is resized. "
-        "height_pixels: required — height in pixels (e.g. 40)."
+        "Set height of rows in pixels. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, start_row (1-based). "
+        "OPTIONAL: end_row (inclusive), height_pixels (default 21). "
+        "EXAMPLE: start_row=1, end_row=1, height_pixels=40."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str,
      "start_row": int, "end_row": int, "height_pixels": int},
 )
 async def set_row_height(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "start_row")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        start_row = int(args["start_row"]) - 1  # 0-based
-        end_row = int(args.get("end_row", args["start_row"]))  # exclusive end
-        height = int(args["height_pixels"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        start_row = int(args["start_row"]) - 1
+        end_row = int(args.get("end_row", args["start_row"]))
+        height = int(args.get("height_pixels", 21))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
 
         _batch_update(svc, spreadsheet_id, [{
             "updateDimensionProperties": {
@@ -1092,31 +1470,34 @@ async def set_row_height(args: dict[str, Any]) -> dict[str, Any]:
                 "fields": "pixelSize",
             }
         }])
-        return {"content": [{"type": "text", "text": f"Row(s) {args['start_row']}–{end_row} set to {height}px in '{sheet_name}'."}]}
+        return {"content": [{"type": "text", "text": f"✓ Row height(s) set to {height}px in '{sheet_name}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error setting row height: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "auto_resize_columns",
     (
-        "Auto-fit column widths to match their content. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "start_column: optional — 1-based, default 1 (column A). "
-        "end_column: optional — 1-based inclusive, default resizes all columns."
+        "Fit column widths to content automatically. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name. "
+        "OPTIONAL: start_column, end_column (inclusive, default all). "
+        "EXAMPLE: sheet_name='Data', start_column=1, end_column=5."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "start_column": int, "end_column": int},
 )
 async def auto_resize_columns(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
         start_col = int(args.get("start_column", 1)) - 1
-        end_col = int(args.get("end_column", 26))  # exclusive end
+        end_col = int(args.get("end_column", 26))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
 
         _batch_update(svc, spreadsheet_id, [{
             "autoResizeDimensions": {
@@ -1128,28 +1509,31 @@ async def auto_resize_columns(args: dict[str, Any]) -> dict[str, Any]:
                 }
             }
         }])
-        return {"content": [{"type": "text", "text": f"Columns auto-resized in '{sheet_name}'."}]}
+        return {"content": [{"type": "text", "text": f"✓ Columns auto-resized in '{sheet_name}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error auto-resizing columns: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "set_number_format",
     (
-        "Apply a number format to a cell range. "
-        "format_type: one of 'number', 'currency', 'percent', 'date', 'datetime', 'time', 'text', 'scientific', or a custom pattern. "
-        "Examples of custom patterns: '#,##0.00', '$#,##0', '0%', 'MM/DD/YYYY', '@'. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "range: required — A1 notation WITHOUT sheet prefix. format_type: required."
+        "Apply a number format to a range. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range, format_type. "
+        "format_type: 'number', 'currency', 'percent', 'date', 'text', or custom pattern like '#,##0.00'. "
+        "EXAMPLE: range='B2:B10', format_type='currency'."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str, "format_type": str},
 )
 async def set_number_format(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range", "format_type")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
         fmt_type = str(args["format_type"]).lower()
 
         presets = {
@@ -1163,15 +1547,11 @@ async def set_number_format(args: dict[str, Any]) -> dict[str, Any]:
             "scientific": ("0.00E+00", "SCIENTIFIC"),
         }
 
-        if fmt_type in presets:
-            pattern, nft = presets[fmt_type]
-        else:
-            pattern = args["format_type"]
-            nft = "NUMBER"
+        pattern, nft = presets.get(fmt_type, (args["format_type"], "NUMBER"))
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         _batch_update(svc, spreadsheet_id, [{
             "repeatCell": {
@@ -1184,34 +1564,37 @@ async def set_number_format(args: dict[str, Any]) -> dict[str, Any]:
                 "fields": "userEnteredFormat.numberFormat",
             }
         }])
-        return {"content": [{"type": "text", "text": f"Number format '{pattern}' applied to {sheet_name}!{range_}."}]}
+        return {"content": [{"type": "text", "text": f"✓ Number format '{pattern}' applied to '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error setting number format: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 @tool(
     "align_cells",
     (
-        "Set the horizontal and/or vertical alignment of cells. "
-        "horizontal: optional — 'LEFT', 'CENTER', 'RIGHT'. "
-        "vertical: optional — 'TOP', 'MIDDLE', 'BOTTOM'. "
-        "wrap_strategy: optional — 'WRAP' (wrap text), 'CLIP', 'OVERFLOW_CELL'. "
-        "user_id: required. spreadsheet_id: required. sheet_name: required. "
-        "range: required — A1 notation WITHOUT sheet prefix."
+        "Set cell alignment and wrapping strategy. "
+        "REQUIRED: user_id, spreadsheet_id, sheet_name, range. "
+        "OPTIONAL: horizontal ('LEFT', 'CENTER', 'RIGHT'), vertical ('TOP', 'MIDDLE', 'BOTTOM'). "
+        "OPTIONAL: wrap_strategy ('WRAP', 'CLIP', 'OVERFLOW_CELL'). "
+        "EXAMPLE: horizontal='CENTER', wrap_strategy='WRAP'."
     ),
     {"user_id": int, "spreadsheet_id": str, "sheet_name": str, "range": str,
      "horizontal": str, "vertical": str, "wrap_strategy": str},
 )
 async def align_cells(args: dict[str, Any]) -> dict[str, Any]:
     try:
+        _validate_required(args, "user_id", "spreadsheet_id", "sheet_name", "range")
         user_id = int(args["user_id"])
-        spreadsheet_id = str(args["spreadsheet_id"])
-        sheet_name = str(args["sheet_name"])
-        range_ = str(args["range"])
+        spreadsheet_id = str(args["spreadsheet_id"]).strip()
+        sheet_name = str(args["sheet_name"]).strip()
+        range_str = str(args["range"]).strip()
+        _validate_a1_notation(range_str)
 
         svc = _sheets(user_id)
-        sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
-        grid_range = _a1_to_grid_range(sheet_id, range_)
+        sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
+        grid_range = _a1_to_grid_range(sheet_id, range_str)
 
         cell_fmt: dict[str, Any] = {}
         fields_list: list[str] = []
@@ -1227,7 +1610,7 @@ async def align_cells(args: dict[str, Any]) -> dict[str, Any]:
             fields_list.append("userEnteredFormat.wrapStrategy")
 
         if not fields_list:
-            return {"content": [{"type": "text", "text": "No alignment options provided."}]}
+            return {"content": [{"type": "text", "text": "Validation Error: No alignment options provided."}]}
 
         _batch_update(svc, spreadsheet_id, [{
             "repeatCell": {
@@ -1236,9 +1619,11 @@ async def align_cells(args: dict[str, Any]) -> dict[str, Any]:
                 "fields": ",".join(fields_list),
             }
         }])
-        return {"content": [{"type": "text", "text": f"Alignment applied to {sheet_name}!{range_}."}]}
+        return {"content": [{"type": "text", "text": f"✓ Alignment applied to '{sheet_name}!{range_str}'."}]}
+    except ValueError as e:
+        return {"content": [{"type": "text", "text": f"Validation Error: {e}"}]}
     except Exception as e:
-        return {"content": [{"type": "text", "text": f"Error aligning cells: {e}"}]}
+        return {"content": [{"type": "text", "text": f"Error: {e}"}]}
 
 
 # ---------------------------------------------------------------------------
@@ -1248,16 +1633,10 @@ async def align_cells(args: dict[str, Any]) -> dict[str, Any]:
 def _parse_a1_to_source_range(svc, spreadsheet_id: str, full_range: str) -> dict:
     """
     Parse 'SheetName!A1:C10' into a Sheets API GridRange dict.
-    Fetches the sheetId for the named sheet automatically.
+    Uses cache for sheet IDs.
     """
-    if "!" in full_range:
-        sheet_name, cell_range = full_range.split("!", 1)
-        # Strip surrounding quotes if present (some AI models add them)
-        sheet_name = sheet_name.strip("'\"")
-    else:
-        raise ValueError("data_range must include sheet name, e.g. 'Sheet1!A1:C10'")
-
-    sheet_id = _get_sheet_id(svc, spreadsheet_id, sheet_name)
+    sheet_name, cell_range = _validate_full_a1_notation(full_range)
+    sheet_id = _get_sheet_id_cached(svc, spreadsheet_id, sheet_name)
     return _a1_to_grid_range(sheet_id, cell_range)
 
 
