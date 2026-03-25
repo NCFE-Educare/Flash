@@ -1344,12 +1344,16 @@ async def chat_stream(
                         "document_urls": body.document_urls or [],
                     })
                     break
+                elif event_type == "thinking_start":
+                    yield _sse_event("thinking_start", {})
                 elif event_type == "thinking":
                     yield _sse_event("thinking", {"content": item["content"]})
                 elif event_type == "text":
                     yield _sse_event("text", {"content": item["content"]})
                 elif event_type == "tool_start":
                     yield _sse_event("tool_start", {"tool": item["tool"]})
+                elif event_type == "tool_input":
+                    yield _sse_event("tool_input", {"tool": item["tool"], "input": item["input"]})
                 elif event_type == "tool_end":
                     yield _sse_event("tool_end", {"tool": item["tool"]})
         finally:
@@ -1816,10 +1820,10 @@ async def _run_agent_streaming(
 
     async def _execute_streaming(opts: ClaudeAgentOptions, msg: str) -> None:
         assistant_texts: list[str] = []
-        last_turn_texts: list[str] = []
         sid: str | None = None
         in_tool = False
         current_tool: str | None = None
+        current_tool_input_str: str = ""
         amk = _agent_model_keys(opts)
         delegation_stack: list[str] = []
         pending_delegation: str | None = None
@@ -1828,44 +1832,89 @@ async def _run_agent_streaming(
         async with ClaudeSDKClient(options=opts) as client:
             await client.query(msg)
             async for message in client.receive_response():
+
+                # ═══════════════════════════════════════════════════════
+                # 1. HANDLE STREAM EVENTS (real-time deltas)
+                # ═══════════════════════════════════════════════════════
                 if isinstance(message, StreamEvent):
                     event = message.event
                     event_type = event.get("type")
 
+                    # Handle block starts (thinking or tool use)
                     if event_type == "content_block_start":
                         content_block = event.get("content_block", {})
-                        if content_block.get("type") == "tool_use":
+                        block_type = content_block.get("type")
+                        
+                        if block_type == "thinking":
+                            queue.put({"type": "thinking_start"})
+                        elif block_type == "tool_use":
                             current_tool = content_block.get("name", "Tool")
+                            current_tool_input_str = ""
                             in_tool = True
                             queue.put({"type": "tool_start", "tool": current_tool})
 
+                    # Handle deltas (text, thinking, or tool input)
                     elif event_type == "content_block_delta":
                         delta = event.get("delta", {})
-                        if delta.get("type") == "text_delta" and not in_tool:
+                        delta_type = delta.get("type")
+                        
+                        if delta_type == "text_delta":
+                            # ACTUAL RESPONSE TEXT - send immediately
                             chunk = delta.get("text", "")
                             if chunk:
+                                queue.put({"type": "text", "content": chunk})
+                                assistant_texts.append(chunk)
+                        
+                        elif delta_type == "thinking_delta":
+                            # THINKING TEXT - send immediately
+                            chunk = delta.get("thinking", "")
+                            if chunk:
                                 queue.put({"type": "thinking", "content": chunk})
+                        
+                        elif delta_type == "tool_use_delta":
+                            # TOOL INPUT being built up (as string fragment)
+                            input_delta = delta.get("input", "")
+                            if input_delta:
+                                current_tool_input_str += input_delta
 
+                    # Handle block stops
                     elif event_type == "content_block_stop":
                         if in_tool and current_tool:
+                            # Parse final tool input if possible, otherwise send raw
+                            try:
+                                parsed_input = json.loads(current_tool_input_str)
+                            except Exception:
+                                parsed_input = current_tool_input_str
+                            
+                            queue.put({
+                                "type": "tool_input",
+                                "tool": current_tool,
+                                "input": parsed_input
+                            })
                             queue.put({"type": "tool_end", "tool": current_tool})
                             in_tool = False
                             current_tool = None
+                            current_tool_input_str = ""
 
+                # ═══════════════════════════════════════════════════════
+                # 2. HANDLE ASSISTANT MESSAGE (for delegation tracking)
+                # ═══════════════════════════════════════════════════════
                 elif isinstance(message, AssistantMessage):
                     msg_model = (message.model or "").lower()
                     if pending_delegation:
                         delegation_stack.append(pending_delegation)
                         pending_delegation = None
+                    
                     while delegation_stack:
                         top_model = amk.get(delegation_stack[-1], "")
                         if top_model and top_model in msg_model:
                             break
                         delegation_stack.pop()
+                    
                     agent_label = delegation_stack[-1] if delegation_stack else "Main agent"
                     trace_write(f"[Agent: {agent_label}]")
-                    has_tool_use = any(isinstance(b, ToolUseBlock) for b in message.content)
-                    turn_texts: list[str] = []
+                    
+                    # ONLY use this for tracing tool delegation, NOT for streaming chunks
                     for block in message.content:
                         if isinstance(block, ToolUseBlock):
                             if block.name == "Task":
@@ -1874,9 +1923,7 @@ async def _run_agent_streaming(
                                     or (block.input or {}).get("agent")
                                     or "subagent"
                                 )
-                                task = str((block.input or {}).get("prompt") or (block.input or {}).get("task") or (block.input or {}).get("description", ""))
-                                task_preview = task[:80] + "..." if len(task) > 80 else task
-                                trace_write(f"  → [Subagent] Delegating to '{agent_name}': {task_preview}")
+                                trace_write(f"  → [Subagent] {agent_name}")
                                 pending_delegation = agent_name
                             elif block.name == "WebSearch":
                                 query = (block.input or {}).get("query", "")
@@ -1887,18 +1934,23 @@ async def _run_agent_streaming(
                             if agent_label != "Main agent":
                                 trace_write(f"  --- {agent_label} response ---")
                             trace_write(block.text)
-                            assistant_texts.append(block.text)
-                            turn_texts.append(block.text)
-                    if not has_tool_use and turn_texts:
-                        last_turn_texts = turn_texts
+
+                # ═══════════════════════════════════════════════════════
+                # 3. HANDLE RESULT MESSAGE (completion)
+                # ═══════════════════════════════════════════════════════
                 elif isinstance(message, ResultMessage):
                     sid = message.session_id
                     trace_write(f"[Result] turns={message.num_turns} duration={message.duration_ms}ms")
 
-        final_texts = last_turn_texts if last_turn_texts else assistant_texts
-        raw = "\n".join(final_texts) if final_texts else "(no response)"
-        raw = raw.replace("\\n", "\n").replace("\\t", "\t")
+        # Build final response from collected chunks
+        raw = "".join(assistant_texts)
+        if not raw:
+            raw = "(no response)"
+        
+        # Strip escaped characters if any (matching original behavior if needed)
+        # raw = raw.replace("\\n", "\n").replace("\\t", "\t")
 
+        # Save and broadcast AFTER streaming completes
         add_message(session_id, role="assistant", content=raw)
         if sid:
             save_claude_session_id(session_id, sid)
@@ -1915,9 +1967,7 @@ async def _run_agent_streaming(
 
         _broadcast_response_done(user_id, session_id)
 
-        for chunk in final_texts:
-            queue.put({"type": "text", "content": chunk})
-
+        # Put done event with final assembled response
         queue.put({
             "type": "done",
             "reply": raw,
