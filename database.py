@@ -41,6 +41,42 @@ def init_db() -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists — nothing to do
 
+        # Migrate sessions to allow NULL user_id (Google Chat groups)
+        try:
+            # Check if sessions table exists first
+            tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sessions'").fetchall()
+            if tables:
+                # Check if user_id is already nullable
+                info = conn.execute("PRAGMA table_info(sessions)").fetchall()
+                user_id_col = next((c for c in info if c[1] == "user_id"), None)
+                if user_id_col and user_id_col[3] == 1:  # 1 means NOT NULL
+                    print("[DB] sessions.user_id is NOT NULL, migrating...")
+                    # 1. Rename old table
+                    conn.execute("ALTER TABLE sessions RENAME TO sessions_old")
+                    # 2. Create new table
+                    conn.execute("""
+                        CREATE TABLE sessions (
+                            id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                            user_id           INTEGER REFERENCES users(id) ON DELETE CASCADE,
+                            title             TEXT NOT NULL DEFAULT 'New Chat',
+                            claude_session_id TEXT,
+                            created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )
+                    """)
+                    # 3. Copy data
+                    conn.execute("""
+                        INSERT INTO sessions (id, user_id, title, claude_session_id, created_at, updated_at)
+                        SELECT id, user_id, title, claude_session_id, created_at, updated_at FROM sessions_old
+                    """)
+                    # 4. Drop old table
+                    conn.execute("DROP TABLE sessions_old")
+                    conn.commit()
+                    print("[DB] Migrated sessions table to allow NULL user_id successfully")
+        except Exception as e:
+            print(f"[DB] Migration error (sessions nullability): {e}")
+            conn.rollback() # Rollback on error
+
         conn.executescript("""
             CREATE TABLE IF NOT EXISTS users (
                 id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -52,7 +88,7 @@ def init_db() -> None:
 
             CREATE TABLE IF NOT EXISTS sessions (
                 id                INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                user_id           INTEGER REFERENCES users(id) ON DELETE CASCADE,
                 title             TEXT NOT NULL DEFAULT 'New Chat',
                 claude_session_id TEXT,
                 created_at        TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -223,7 +259,7 @@ def get_user_by_id(user_id: int) -> dict | None:
 # Sessions
 # ---------------------------------------------------------------------------
 
-def create_session(user_id: int, title: str = "New Chat") -> dict:
+def create_session(user_id: int | None, title: str = "New Chat") -> dict:
     with _get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO sessions (user_id, title) VALUES (?, ?)",
@@ -243,32 +279,46 @@ def get_sessions_for_user(user_id: int) -> list[dict]:
         )
 
 
-def get_session(session_id: int, user_id: int) -> dict | None:
-    """Fetch a single session, enforcing ownership."""
+def get_session(session_id: int, user_id: int | None) -> dict | None:
+    """Fetch a single session, enforcing ownership if user_id is provided."""
     with _get_conn() as conn:
-        return _row(
-            conn,
-            "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
-            (session_id, user_id),
-        )
+        if user_id is not None:
+            return _row(
+                conn,
+                "SELECT * FROM sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+        return _row(conn, "SELECT * FROM sessions WHERE id = ? AND user_id IS NULL", (session_id,))
 
 
-def rename_session(session_id: int, user_id: int, title: str) -> dict | None:
+def rename_session(session_id: int, user_id: int | None, title: str) -> dict | None:
     with _get_conn() as conn:
-        conn.execute(
-            "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
-            (title, session_id, user_id),
-        )
+        if user_id is not None:
+            conn.execute(
+                "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id = ?",
+                (title, session_id, user_id),
+            )
+        else:
+            conn.execute(
+                "UPDATE sessions SET title = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND user_id IS NULL",
+                (title, session_id),
+            )
         conn.commit()
-        return _row(conn, "SELECT * FROM sessions WHERE id = ? AND user_id = ?", (session_id, user_id))
+        return get_session(session_id, user_id)
 
 
-def delete_session(session_id: int, user_id: int) -> bool:
+def delete_session(session_id: int, user_id: int | None) -> bool:
     with _get_conn() as conn:
-        cur = conn.execute(
-            "DELETE FROM sessions WHERE id = ? AND user_id = ?",
-            (session_id, user_id),
-        )
+        if user_id is not None:
+            cur = conn.execute(
+                "DELETE FROM sessions WHERE id = ? AND user_id = ?",
+                (session_id, user_id),
+            )
+        else:
+            cur = conn.execute(
+                "DELETE FROM sessions WHERE id = ? AND user_id IS NULL",
+                (session_id,),
+            )
         conn.commit()
         return cur.rowcount > 0
 
@@ -283,11 +333,43 @@ def save_claude_session_id(session_id: int, claude_session_id: str) -> None:
         conn.commit()
 
 
+def get_session_by_title(title: str, user_id: int | None = None) -> dict | None:
+    """Fetch an existing session by title (useful for space-based session reuse)."""
+    with _get_conn() as conn:
+        if user_id is not None:
+            return _row(
+                conn,
+                "SELECT * FROM sessions WHERE title = ? AND user_id = ? LIMIT 1",
+                (title, user_id)
+            )
+        else:
+            return _row(
+                conn,
+                "SELECT * FROM sessions WHERE title = ? AND user_id IS NULL LIMIT 1",
+                (title,)
+            )
+
+
 def _touch_session(conn, session_id: int) -> None:
     conn.execute(
         "UPDATE sessions SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
         (session_id,),
     )
+
+
+def get_or_create_gchat_session(space_name: str, user_email: str, is_group: bool) -> dict:
+    """
+    Fetch or create a session specifically for a Google Chat space.
+    If is_group=True, we use user_id=None to keep the space history shared/shared.
+    If is_group=False, we still use the space_name (which is a DM ID) as the title.
+    """
+    # Try to find existing session by space name (title)
+    session = get_session_by_title(space_name, user_id=None)
+    if session:
+        return session
+    
+    # Create new one
+    return create_session(user_id=None, title=space_name)
 
 
 # ---------------------------------------------------------------------------

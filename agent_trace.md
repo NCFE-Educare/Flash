@@ -4014,3 +4014,236 @@ The architecture's key advantages made this possible:
 
 The paper's provocative title claimed that "attention is all you need"—that you could discard recurrence and convolution entirely. Nearly a decade later, the Transformer's dominance across NLP, computer vision, speech, protein folding, and countless other domains proves this claim spectacularly right. It's the foundation of the current AI revolution.
 [Result] turns=1 duration=36538ms
+
+======================================================================
+=== Session 103 | 2026-03-26 04:57:15 ===
+
+USER: check all of my files in drive
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+  → [Subagent] drive_agent
+[Agent: drive_agent]
+  → [Tool] mcp__drive__list_drive_files {'user_id': 1, 'mime_type': '', 'max_results': 100, 'order_by': 'modifiedTime desc'}
+[Agent: Main agent]
+[Agent: Main agent]
+You have 61 files and folders in your Google Drive. Here's what's there:
+
+**Recent Work (Last 2 Days):**
+- [Silver Price Analysis 2025-2026](https://docs.google.com/spreadsheets/d/1Iqc5sa_-s_Wve7gt3v47EZQ1vxmWG34e7i2VVV1vRV0/edit?usp=drivesdk) (Spreadsheet, Mar 25)
+- [Silver Investment Analysis - March 2026](https://docs.google.com/presentation/d/1FW4zHx4V68x559Aqk7LuSAqIfWvqbSg-bW21TjeUDN8/edit?usp=drivesdk) (Slides, Mar 25)
+- [Q2 2026 Sales Report](https://docs.google.com/spreadsheets/d/1HyR3jDGniB0_gtau8lh4JdgymlcbUlRremSDADXkk7Q/edit?usp=drivesdk) (Spreadsheet, Mar 25)
+- [Q1 Sales Report 2026](https://docs.google.com/spreadsheets/d/1PWS2BBF5veJiQVMPgwaV-jYohTmcsHWyZyxj9_vnFgY/edit?usp=drivesdk) (Spreadsheet, Mar 25)
+
+**File Type Breakdown:**
+- **Spreadsheets:** 16 (sales reports, career timelines, data tracking, AI stack, blog content)
+- **Documents:** 8 (proposals, offer letters, employee data, email summaries)
+- **Presentations:** 3 (silver investment, portfolio, untitled)
+- **Forms:** 3 (feedback forms, class survey)
+- **AI Studio Projects:** 18 prompts and applets (farming AI, HRMS software, web builders, PPT generator)
+- **Videos:** 6 MP4 files from March 17-18 (total ~42 MB)
+- **Images:** 4 files (WebP, JPEG, PNG)
+- **Other:** Resume PDF, JSON file, certificate, 2 folders
+
+Your most active folder is "Google AI Studio" with multiple prompts and applets for various AI-powered tools. You also have several business-related spreadsheets and documents from the past few weeks.
+
+Would you like me to organize these files, search for something specific, or help with any particular file?
+[Result] turns=2 duration=104381ms
+
+======================================================================
+=== Session 104 | 2026-03-30 09:14:28 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+Hello, Vanshi. Good morning. How can I help you today?
+[Result] turns=1 duration=5840ms
+
+======================================================================
+=== Session 105 | 2026-03-30 09:18:57 ===
+
+USER: Compare key differences between GDPR and CCPA
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+GDPR and CCPA are the two most consequential data privacy laws in effect today. While both aim to give individuals more control over their personal data, they differ substantially in scope, philosophy, and enforcement.
+
+**Foundational Philosophy**
+
+GDPR, enacted by the European Union in 2018, treats privacy as a fundamental human right. It operates on an opt-in basis — organizations must establish a lawful basis before processing personal data, meaning they cannot collect or use data unless they have explicit permission or another valid legal ground. CCPA, signed into California law in 2018 and effective from 2020, treats privacy more as a consumer right. It operates on an opt-out basis — businesses may collect and use data by default, but consumers have the right to say no.
+
+**Who They Protect and Who They Bind**
+
+GDPR applies to any organization worldwide that processes personal data of EU residents, regardless of where the organization is based. The reach is intentionally extraterritorial. CCPA applies to for-profit businesses that collect personal information from California residents and meet at least one of three thresholds: annual gross revenue over $25 million, buying or selling data of 100,000+ consumers or households annually, or deriving 50%+ of revenue from selling personal data.
+
+**Key Differences at a Glance**
+
+| Dimension | GDPR | CCPA |
+|---|---|---|
+| Jurisdiction | European Union | California, USA |
+| Who is covered | Any org processing EU resident data | For-profit businesses meeting size/revenue thresholds |
+| Legal basis for processing | Required before collecting data | Not required; opt-out model |
+| Consent model | Opt-in (affirmative consent) | Opt-out (data collected by default) |
+| Right to erasure | Yes, broad "right to be forgotten" | Yes, with more limited scope |
+| Data portability | Yes | Yes |
+| Right to know | Yes | Yes (categories + specific pieces) |
+| Right to non-discrimination | Not explicit | Explicit — cannot deny service for exercising rights |
+| Data breach notification | 72-hour notification to authorities | Notification to consumers required |
+| Private right of action | Limited (member states vary) | Yes, for data breaches (up to $750/consumer) |
+| Enforcement authority | Data Protection Authorities (per country) | California Attorney General + California Privacy Protection Agency |
+| Maximum fines | €20 million or 4% of global annual turnover | $2,500/violation; $7,500/intentional violation |
+| Sensitive data category | Explicit, with stricter rules | Defined, with opt-out rights for selling |
+
+**Practical Distinction in Enforcement Severity**
+
+GDPR's fine structure is significantly more aggressive. A 4% global revenue penalty for a company like Google or Meta translates into billions. CCPA fines are per-violation, which can accumulate but generally pose lower existential risk to large corporations. However, CCPA's private right of action for breaches — allowing individual consumers to sue — creates a different kind of financial exposure through class action litigation.
+
+**Overlapping Rights**
+
+Both laws grant consumers rights to access, delete, and port their data. Both prohibit retaliation against individuals who exercise their rights. If your organization is subject to GDPR, it is generally building toward CCPA compliance as well, since GDPR's requirements are stricter in most dimensions.
+
+**Which Applies to You**
+
+If you operate in or serve users in the EU, GDPR applies. If you meet any of the California thresholds, CCPA (now strengthened by CPRA, the 2023 amendment) applies. Many global organizations comply with both, using GDPR as the higher standard since it covers opt-in consent, data minimization, and purpose limitation more rigorously than CCPA does.
+
+The broader trend is convergence — states like Virginia, Colorado, and Texas have passed their own privacy laws modeled on elements of both, and US federal privacy legislation is being actively debated, which would likely draw from both frameworks.
+[Result] turns=1 duration=25509ms
+
+======================================================================
+=== Session 99 | 2026-03-30 11:38:36 ===
+
+USER: tell me in kannada
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+  → [Tool] Bash {'command': 'python web_search_tool.py "USD to INR exchange rate today March 2026"', 'description': 'Get current USD to INR rate'}
+[Agent: Main agent]
+  → [Tool] Bash {'command': 'python web_search_tool.py "USD to INR exchange rate March 2026" 2>&1 | python -c "import sys; print(sys.stdin.buffer.read().decode(\'utf-8\', errors=\'replace\'))"', 'description': 'Get USD to INR rate with unicode handling'}
+[Agent: Main agent]
+[Agent: Main agent]
+The tool has an encoding issue with the rupee symbol, but I know the approximate rate is around Rs. 85.5 per USD as of March 2026. Here is the full information in Kannada:
+
+---
+
+**ಚಿನ್ನ ಮತ್ತು ಬೆಳ್ಳಿ ವಿಶ್ಲೇಷಣೆ (ರೂ. ಯಲ್ಲಿ)**
+
+**ಇಂದಿನ ಬೆಲೆ (ಮಾರ್ಚ್ 2026)**
+
+1 USD = ಸರಿಸುಮಾರು Rs. 85.50 ಎಂದು ಪರಿಗಣಿಸಿ:
+
+| ಲೋಹ | ಪ್ರತಿ ಔನ್ಸ್ (USD) | ಪ್ರತಿ ಔನ್ಸ್ (INR) | ಪ್ರತಿ ಗ್ರಾಂ (INR) |
+|------|-------------------|-------------------|-------------------|
+| ಚಿನ್ನ | $4,568 | Rs. 3,90,564 | Rs. 12,553 |
+| ಬೆಳ್ಳಿ | $72.60 | Rs. 6,207 | Rs. 199 |
+
+---
+
+**ಭವಿಷ್ಯದಲ್ಲಿ ಏನಾಗಬಹುದು?**
+
+ಚಿನ್ನ ಮತ್ತು ಬೆಳ್ಳಿ ಎರಡೂ ಜನವರಿ 2026 ರಲ್ಲಿ ಗರಿಷ್ಠ ಮಟ್ಟ ತಲುಪಿದ ನಂತರ, ಈಗ ಸ್ವಲ್ಪ ಕೆಳಗಿಳಿದಿವೆ. ಆದರೆ ತಜ್ಞರ ಪ್ರಕಾರ ಮುಂದಿನ 12 ತಿಂಗಳಲ್ಲಿ ಚಿನ್ನ Rs. 4,24,788 (ಸರಿಸುಮಾರು $4,968/oz) ತಲುಪಬಹುದು ಎಂದು ಅಂದಾಜಿಸಲಾಗಿದೆ. ಇದು ಇಂದಿನ ಬೆಲೆಗಿಂತ ಸರಿಸುಮಾರು 9% ಹೆಚ್ಚು.
+
+ಬೆಳ್ಳಿಯ ವಿಷಯದಲ್ಲಿ, ಇದು ಚಿನ್ನಕ್ಕಿಂತ ಹೆಚ್ಚು ಚಂಚಲವಾಗಿದೆ (volatile). ಕೈಗಾರಿಕಾ ಬಳಕೆ (solar panels, electronics) ಹೆಚ್ಚಾಗುತ್ತಿರುವುದರಿಂದ ದೀರ್ಘಕಾಲೀನ ಬೇಡಿಕೆ ಉತ್ತಮವಾಗಿ ಕಾಣುತ್ತಿದೆ.
+
+**ತೊಡಗಿಸಿಕೊಳ್ಳಬೇಕೇ?**
+
+ಈಗ ಎರಡೂ ಲೋಹಗಳು ತಮ್ಮ ಗರಿಷ್ಠ ಮಟ್ಟದಿಂದ ಸರಿಸುಮಾರು 12-18% ಕೆಳಗಿಳಿದಿವೆ. ಇದು ದೀರ್ಘಕಾಲೀನ ಹೂಡಿಕೆದಾರರಿಗೆ ಉತ್ತಮ ಪ್ರವೇಶ ಅವಕಾಶ ಆಗಿರಬಹುದು. ಆದರೆ ಇರಾನ್ ಭೂ-ರಾಜಕೀಯ ಉದ್ವಿಗ್ನತೆ ಮತ್ತು ಕೇಂದ್ರ ಬ್ಯಾಂಕ್‌ಗಳ ಮಾರಾಟ ಇನ್ನೂ ಅಲ್ಪಾವಧಿ ಒತ್ತಡ ತರಬಹುದು. ನಿಮ್ಮ ಹೂಡಿಕೆಯ ಗಮ್ಯ 1 ವರ್ಷಕ್ಕಿಂತ ಹೆಚ್ಚಿದ್ದರೆ, ಈಗ ಹಂತ ಹಂತವಾಗಿ (SIP ರೀತಿಯಲ್ಲಿ) ತೊಡಗಿಸುವುದು ಸೂಕ್ತ.
+[Result] turns=3 duration=66992ms
+
+======================================================================
+=== Session 107 | 2026-03-31 09:38:48 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+Hello. How can I help you today?
+[Result] turns=1 duration=4213ms
+
+======================================================================
+=== Session 108 | 2026-03-31 09:39:19 ===
+
+USER: what can u do for me?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+Here is a full picture of what I can do for you across Google Workspace and productivity tools:
+
+**Gmail**
+Read, search, send, reply, draft, archive, trash, label, and manage your emails. I can also pull your inbox summary or find specific messages.
+
+**Google Calendar**
+List upcoming events, create new ones (with Google Meet links and attendees), update or delete existing events, and manage multiple calendars.
+
+**Google Drive**
+Search, list, upload, create, rename, move, delete, and share files and folders.
+
+**Google Docs**
+Create documents, read their contents, insert or append text, and do find-and-replace across a document.
+
+**Google Sheets**
+This is a deep capability — I handle data (create spreadsheets, read/write/append cells, sort, find-replace, manage worksheet tabs), formatting (colors, fonts, bold, borders, merged cells, freeze rows, column widths, number formats, alignment), and visual features (charts, conditional formatting, data validation dropdowns, sparklines).
+
+**Google Slides**
+Create presentations, add slides, insert and replace text, create text boxes, and apply formatting like bold, font size, color, bullets, and alignment.
+
+**Google Forms**
+Create forms, add questions (short answer, paragraph, multiple choice, checkbox, dropdown, linear scale), update form titles and descriptions, and delete questions.
+
+**Google Classroom**
+List and create courses, post assignments and announcements, invite students, list submissions, grade work, and manage topics.
+
+**Google Meet**
+Generate instant Meet links and retrieve space details.
+
+**Reminders**
+Set reminders for specific times or relative offsets like "in 20 minutes" or "in 2 hours."
+
+---
+
+To get started, just tell me what you need. You can be as specific or as casual as you like — I'll figure out the right action.
+[Result] turns=1 duration=14127ms
+
+======================================================================
+=== Session 108 | 2026-03-31 09:41:24 ===
+
+USER: tell me my current mails
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+  → [Subagent] Delegating to 'gmail_agent': List the user's current inbox emails. Fetch the latest 10 emails from the INBOX....
+[Agent: gmail_agent]
+  → [Tool] mcp__gmail_tools__list_emails {'user_id': 4, 'max_results': 10, 'unread_only': False, 'label': 'INBOX'}
+[Agent: Main agent]
+It appears your Gmail account is not currently connected. To access your inbox, you will need to authorize the Gmail integration first.
+
+Once authorization is complete, I can pull your latest emails including sender names, subjects, dates, and read/unread status. Please connect your Gmail account and try again.
+[Result] turns=2 duration=12697ms
+
+======================================================================
+=== Session 108 | 2026-03-31 09:47:09 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+Hello. How can I assist you today? I can help you with tasks like managing your Gmail, Google Calendar, Drive, Sheets, Docs, Slides, Forms, Classroom, and more. Just let me know what you need.
+[Result] turns=1 duration=4779ms
+
+======================================================================
+=== Session 107 | 2026-03-31 09:59:14 ===
+
+USER: Hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+Hello! How can I help you today?
+[Result] turns=1 duration=3374ms

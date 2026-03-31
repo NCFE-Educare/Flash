@@ -3,15 +3,19 @@
 import asyncio
 import concurrent.futures
 import json
+import os
 import shutil
 import sys
 import threading
+import traceback
 import uuid
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -48,10 +52,12 @@ from database import (
     get_slides_tokens,
     get_forms_tokens,
     get_user_by_email,
+    get_session_by_title,
     init_db,
     mark_reminder_delivered,
     rename_session,
     save_claude_session_id,
+    get_or_create_gchat_session,
 )
 
 # ---------------------------------------------------------------------------
@@ -145,6 +151,68 @@ def on_startup():
     scheduler = BackgroundScheduler()
     scheduler.add_job(_run_reminder_worker, "interval", minutes=1, id="reminder_worker")
     scheduler.start()
+
+
+# ---------------------------------------------------------------------------
+# Google Chat Service & Webhook Helpers
+# ---------------------------------------------------------------------------
+
+def get_gchat_service():
+    """Initialize Google Chat API client using service account credentials."""
+    try:
+        credentials = service_account.Credentials.from_service_account_file(
+            'service-account.json',
+            scopes=['https://www.googleapis.com/auth/chat.bot']
+        )
+        return build('chat', 'v1', credentials=credentials)
+    except FileNotFoundError:
+        print("[GChat] service-account.json not found — bot cannot send messages")
+        return None
+    except Exception as e:
+        print(f"[GChat] Error initializing service: {e}")
+        return None
+
+
+def send_gchat_message(space_name: str, text: str) -> bool:
+    """Send a message to a Google Chat space using the service account bot."""
+    service = get_gchat_service()
+    if not service:
+        print("[GChat] Service not initialized — cannot send message")
+        return False
+    try:
+        service.spaces().messages().create(
+            parent=space_name,
+            body={"text": text}
+        ).execute()
+        print(f"[GChat] Message sent to {space_name}")
+        return True
+    except Exception as e:
+        print(f"[GChat] Failed to send message: {e}")
+        return False
+
+
+def get_or_create_gchat_session(space_name: str, sender_email: str, is_group: bool = False) -> dict | None:
+    """Get or create a session for a Google Chat space."""
+    user = get_user_by_email(sender_email)
+    if not user:
+        print(f"[GChat] User {sender_email} not found in DB")
+        return None  # User must log in first to create account
+
+    # Map spaces to session titles for isolation
+    session_title = f"GChat: {space_name}"
+    
+    # For DMs, we tie it to the user. For groups, user_id is NULL.
+    user_id = user["id"] if not is_group else None
+    
+    session = get_session_by_title(session_title, user_id)
+    if session:
+        return session
+    
+    # Create new session
+    return create_session(
+        user_id=user_id,
+        title=session_title
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1457,6 +1525,194 @@ def cancel_reminder(
     user_id = int(current_user["sub"])
     if not delete_reminder(reminder_id, user_id):
         raise HTTPException(status_code=404, detail="Reminder not found")
+
+
+# ---------------------------------------------------------------------------
+# Google Chat Webhook Endpoint & Processing
+# ---------------------------------------------------------------------------
+
+def _get_gchat_service():
+    """Build the Google Chat discovery service using the service account."""
+    scopes = ["https://www.googleapis.com/auth/chat.bot"]
+    creds_path = "service-account.json"
+    if not os.path.exists(creds_path):
+        print(f"[GChat] {creds_path} not found — bot cannot send message")
+        return None
+    creds = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
+    return build("chat", "v1", credentials=creds)
+
+
+def send_gchat_message(space_name: str, text: str):
+    """Send a plain text message to a Google Chat space/DM."""
+    try:
+        service = _get_gchat_service()
+        if not service:
+            return
+        
+        # Google Chat expects the message body in a specific JSON format
+        body = {"text": text}
+        service.spaces().messages().create(parent=space_name, body=body).execute()
+        print(f"[GChat] Message sent to {space_name}")
+    except Exception as e:
+        print(f"[GChat] Failed to send message: {e}")
+        traceback.print_exc()
+
+
+@app.post("/webhooks/google-chat", tags=["Google Chat"])
+async def google_chat_webhook(
+    request_data: dict,
+    background_tasks: BackgroundTasks
+):
+    """Webhook endpoint for Google Chat mentions."""
+    print(f"[GChat] Webhook received: {json.dumps(request_data, indent=2)}")
+    
+    # Google Chat can send data in different formats depending on if it's a "Bot" or an "App"
+    # Format 1 (Standard Bot): message is at root.
+    # Format 2 (GWS App/Add-on): message is inside chat.messagePayload.
+    
+    # Try Format 1
+    message_data = request_data.get("message")
+    space_data = request_data.get("space")
+    
+    # Fallback to Format 2
+    if not message_data or not space_data:
+        chat_payload = request_data.get("chat", {}).get("messagePayload", {})
+        message_data = message_data or chat_payload.get("message", {})
+        space_data = space_data or chat_payload.get("space", {})
+    
+    if not message_data:
+        # If it's still not a message (e.g. just a join/ping), acknowledge and exit
+        return {"status": "ok"}
+        
+    space_name = space_data.get("name")
+    space_type = space_data.get("type", "SPACE")
+    user_message_text = message_data.get("text", "").strip()
+    
+    # Extract names and emails
+    sender_user_obj = message_data.get("sender", {})
+    root_user_obj = request_data.get("chat", {}).get("user", {})
+    
+    sender_email = sender_user_obj.get("email") or root_user_obj.get("email")
+    sender_name = sender_user_obj.get("displayName") or root_user_obj.get("displayName", "User")
+    
+    user_message_text = message_data.get("text", "").strip()
+    
+    print(f"[GChat] Received message from {sender_name} ({sender_email}) in {space_name} (Type: {space_type})")
+    
+    if not space_name or not sender_email or not user_message_text:
+        print(f"[GChat] Skipping: Missing required fields (email={sender_email}, text={bool(user_message_text)})")
+        return {"status": "error", "message": "Missing fields"}
+    
+    bot_name = os.getenv("GCHAT_BOT_NAME", "agent")
+    bot_user_id = os.getenv("GCHAT_BOT_USER_ID", "")
+    
+    mention_patterns = [
+        f"@{bot_name}",
+        f"<users/{bot_user_id}>" if bot_user_id else None,
+    ]
+    mention_patterns = [p for p in mention_patterns if p]
+    
+    is_dm = (space_type == "DM")
+    has_mention = any(pattern in user_message_text for pattern in mention_patterns)
+    
+    # In groups/spaces, we require a mention. In DMs, we process everything.
+    if not is_dm and not has_mention:
+        print(f"[GChat] Skipping message in {space_name}: No mention detected.")
+        return {}
+    
+    print(f"[GChat] Processing message (is_dm={is_dm}, has_mention={has_mention})")
+    
+    # Clean the message
+    cleaned_message = user_message_text
+    for pattern in mention_patterns:
+        cleaned_message = cleaned_message.replace(pattern, "").strip()
+    
+    background_tasks.add_task(
+        process_gchat_mention,
+        space_name=space_name,
+        sender_email=sender_email,
+        sender_name=sender_name,
+        cleaned_message=cleaned_message,
+        is_group=(not is_dm)
+    )
+    
+    # Return empty JSON to acknowledge receipt (don't send status: ok, Google prefers {} or a message)
+    return {}
+
+
+def process_gchat_mention(
+    space_name: str,
+    sender_email: str,
+    sender_name: str,
+    cleaned_message: str,
+    is_group: bool
+):
+    """Background task to process the Google Chat mention."""
+    print(f"[GChat Background] Started for {sender_email} in {space_name}")
+    try:
+        # Bug #2 Fix: Identity Resolution & strict enrollment check
+        sender_user = get_user_by_email(sender_email)
+        if not sender_user:
+            print(f"[GChat Background] Enroll Check Failed: {sender_email} not found in DB.")
+            send_gchat_message(space_name, f"❌ User {sender_email} not found.\n\nPlease sign up at the web portal first to use Cortex in Google Chat.")
+            return
+        
+        sender_user_id = sender_user["id"]
+        
+        # Resolve the session
+        session = get_or_create_gchat_session(space_name, sender_email, is_group=is_group)
+        if not session:
+             # Safety fallback
+             session = create_session(user_id=None, title=space_name)
+             
+        session_id = session["id"]
+        print(f"[GChat Background] Using session_id {session_id} for user_id {sender_user_id}")
+        
+        # Prefix the message with the sender's name for collaborative spaces
+        if is_group:
+            display_message = f"[{sender_name}]: {cleaned_message}"
+        else:
+            display_message = cleaned_message
+            
+        print(f"[GChat Background] Adding message to DB: {display_message[:50]}...")
+        add_message(session_id, role="user", content=display_message)
+        
+        history = get_messages(session_id)
+        claude_session_id = session.get("claude_session_id")
+        
+        print(f"[GChat Background] Running agent reasoning...")
+        # Bug #1 Fix: _run_agent_in_thread expects 7 parameters (added [], [])
+        reply, new_claude_session_id = _run_agent_in_thread(
+            session_id, display_message, sender_user_id, claude_session_id, history,
+            [], [] # image_urls, document_urls
+        )
+        print(f"[GChat Background] Agent finished reasoning. Reply length: {len(reply)}")
+        
+        add_message(session_id, role="assistant", content=reply)
+        
+        if new_claude_session_id:
+            save_claude_session_id(session_id, new_claude_session_id)
+        
+        send_gchat_message(space_name, reply)
+        
+        # Best-effort memory update
+        try:
+            from memory import add_memory as _mem0_add
+            _mem0_add(sender_user_id, [
+                {"role": "user", "content": cleaned_message},
+                {"role": "assistant", "content": reply},
+            ])
+        except Exception:
+            pass
+            
+    except Exception as e:
+        # Bug #3 Fix: Use traceback to show what actually failed
+        print(f"[GChat Background] CRITICAL ERROR: {e}")
+        traceback.print_exc()
+        try:
+            send_gchat_message(space_name, f"❌ Error processing message: {str(e)[:100]}")
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
