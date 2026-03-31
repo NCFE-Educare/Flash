@@ -58,6 +58,8 @@ from database import (
     rename_session,
     save_claude_session_id,
     get_or_create_gchat_session,
+    get_artifacts_for_session,
+    get_artifact_by_identifier,
 )
 
 # ---------------------------------------------------------------------------
@@ -1128,6 +1130,43 @@ def delete_session_endpoint(
     user_id = int(current_user["sub"])
     if not delete_session(session_id, user_id):
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ---------------------------------------------------------------------------
+# Artifact endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/sessions/{session_id}/artifacts", tags=["Artifacts"])
+def list_session_artifacts(
+    session_id: int,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """List all artifacts for a specific session."""
+    user_id = int(current_user["sub"])
+    session = get_session(session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return get_artifacts_for_session(session_id)
+
+
+@app.get("/sessions/{session_id}/artifacts/{identifier}", tags=["Artifacts"])
+def get_session_artifact(
+    session_id: int,
+    identifier: str,
+    current_user: Annotated[dict, Depends(get_current_user)],
+):
+    """Get a specific artifact by its identifier in a session."""
+    user_id = int(current_user["sub"])
+    session = get_session(session_id, user_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    artifact = get_artifact_by_identifier(session_id, identifier)
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    
+    return artifact
 
 
 # ---------------------------------------------------------------------------

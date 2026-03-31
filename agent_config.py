@@ -40,6 +40,7 @@ def make_agent_options(
     from calendar_tools import calendar_tools_server
     from docs_tools import docs_server
     from reminders_tools import reminders_tools_server
+    from artifacts_tools import artifacts_tools_server
     from drive_tools import drive_server
     from gmail_tools import gmail_tools_server
     from meet_tools import meet_tools_server
@@ -126,6 +127,10 @@ def make_agent_options(
             f"For 'in X seconds/minutes/hours' (e.g. 'remind me in 20 sec', 'in 5 min', 'in 2 hours') — ALWAYS use relative_offset (e.g. '20 seconds', '5 minutes', '2 hours'). Server computes time correctly. "
             f"For absolute times ('tomorrow at 9am', 'next Monday 3pm') — use remind_at with ISO datetime + timezone (e.g. 2025-03-17T09:00:00+05:30). Default timezone Asia/Kolkata. Do NOT delegate to calendar_agent.\n"
         )
+        artifacts_rule = (
+            f"- Artifacts: Use create_artifact or update_artifact when you generate standalone content "
+            f"(code, HTML, dashboards, extensive docs). Always include 'user_id={uid}' and the current 'session_id'.\n"
+        )
     else:
         user_context = (
             "NOTE: No logged-in user — ask the user to provide their user_id before "
@@ -181,6 +186,9 @@ def make_agent_options(
         )
         reminders_rule = (
             "- Reminders: Use create_reminder. For 'in X sec/min/hr' use relative_offset. For absolute times use remind_at (ISO + timezone). Do NOT delegate to calendar_agent.\n"
+        )
+        artifacts_rule = (
+            "- Artifacts: Use create_artifact or update_artifact for standalone content. Include user_id and session_id.\n"
         )
 
     ist = timezone(timedelta(hours=5, minutes=30))
@@ -337,6 +345,23 @@ def make_agent_options(
         "- ALWAYS format as markdown: [descriptive label](url)\n"
         "- NEVER paste raw URLs\n"
         "- Make link text specific and meaningful\n"
+        "\n=== NEW CAPABILITY: ARTIFACTS ===\n"
+        "Artifacts are a special way to present substantial, standalone content that the user can "
+        "render, preview, and interact with in a dedicated UI pane. Use artifacts for:\n"
+        "- **Code Snippets** (>15 lines) or full scripts (Python, JS, etc.)\n"
+        "- **HTML/CSS/JS** dashboards, websites, or interactive components\n"
+        "- **SVG** illustrations or diagrams\n"
+        "- **Mermaid** flowcharts or state diagrams\n"
+        "- **Stand-alone Documents** (Markdown reports, structured guides)\n"
+        "\n**Artifact Workflow:**\n"
+        "1. **Create**: Use `create_artifact` when you first generate the content. Assign a descriptive `identifier` (e.g., 'sales-report').\n"
+        "2. **Update**: Use `update_artifact` if you make changes to an existing artifact in the same session.\n"
+        "3. **Execute**: If you generate a Python script and the user wants to see it run, use `execute_python_artifact`.\n"
+        "\n**Artifact Guidelines:**\n"
+        "- Do NOT use artifacts for short conversational replies or simple snippets.\n"
+        "- Always provide a clear `title`.\n"
+        "- For code, specify the `language` (e.g., 'python', 'javascript', 'html').\n"
+        "- When using artifacts, still provide a brief summary in your chat response explaining what you created.\n"
 
         "\n=== TONE & VOICE ===\n"
         "- Sound like a competent, knowledgeable professional.\n"
@@ -432,6 +457,7 @@ def make_agent_options(
         + forms_rule
         + classroom_rule
         + (reminders_rule if uid else "")
+        + artifacts_rule
     )
 
     base_tools = ["Skill", "Task", "Bash", "Read", "Write", "WebSearch"]
@@ -453,6 +479,7 @@ def make_agent_options(
         "mcp__forms__*",
         "mcp__classroom__*",
         "mcp__reminders__*",
+        "mcp__artifacts__*",
     ]
 
     kwargs: dict = dict(
@@ -471,6 +498,7 @@ def make_agent_options(
             "forms": forms_server,
             "classroom": classroom_server,
             "reminders": reminders_tools_server,
+            "artifacts": artifacts_tools_server,
         },
         agents={
             "gmail_agent": gmail_agent,

@@ -194,6 +194,21 @@ def init_db() -> None:
                 delivered    INTEGER NOT NULL DEFAULT 0,
                 created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            CREATE TABLE IF NOT EXISTS artifacts (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                identifier  TEXT NOT NULL,
+                title       TEXT NOT NULL,
+                type        TEXT NOT NULL,
+                language    TEXT,
+                content     TEXT NOT NULL,
+                version     INTEGER NOT NULL DEFAULT 1,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(session_id, identifier)
+            );
         """)
         conn.commit()
 
@@ -803,6 +818,74 @@ def create_reminder(user_id: int, remind_at: str, message: str) -> dict:
         )
         conn.commit()
         return _row(conn, "SELECT * FROM reminders WHERE id = ?", (cur.lastrowid,))
+
+
+# ---------------------------------------------------------------------------
+# Artifacts
+# ---------------------------------------------------------------------------
+
+def create_artifact(
+    session_id: int,
+    user_id: int,
+    identifier: str,
+    title: str,
+    type: str,
+    content: str,
+    language: str | None = None,
+) -> dict:
+    """Insert a new artifact or fail if (session_id, identifier) exists."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO artifacts (session_id, user_id, identifier, title, type, language, content)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (session_id, user_id, identifier, title, type, language, content),
+        )
+        _touch_session(conn, session_id)
+        conn.commit()
+        return _row(conn, "SELECT * FROM artifacts WHERE id = ?", (cur.lastrowid,))
+
+
+def update_artifact(
+    session_id: int,
+    identifier: str,
+    content: str,
+    title: str | None = None,
+) -> dict | None:
+    """Update an artifact's content and increment version."""
+    with _get_conn() as conn:
+        if title:
+            conn.execute(
+                """
+                UPDATE artifacts
+                SET content = ?, title = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ? AND identifier = ?
+                """,
+                (content, title, session_id, identifier),
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE artifacts
+                SET content = ?, version = version + 1, updated_at = CURRENT_TIMESTAMP
+                WHERE session_id = ? AND identifier = ?
+                """,
+                (content, session_id, identifier),
+            )
+        _touch_session(conn, session_id)
+        conn.commit()
+        return get_artifact_by_identifier(session_id, identifier)
+
+
+def get_artifact_by_identifier(session_id: int, identifier: str) -> dict | None:
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM artifacts WHERE session_id = ? AND identifier = ?", (session_id, identifier))
+
+
+def get_artifacts_for_session(session_id: int) -> list[dict]:
+    with _get_conn() as conn:
+        return _rows(conn, "SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at ASC", (session_id,))
 
 
 def get_reminders_for_user(user_id: int, include_delivered: bool = True) -> list[dict]:
