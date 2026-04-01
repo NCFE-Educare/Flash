@@ -12,13 +12,39 @@ from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions
 
+# ---------------------------------------------------------------------------
+# Load .env (same pattern as the rest of the project)
+# ---------------------------------------------------------------------------
+
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    import os
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _, _v = _line.partition("=")
+            os.environ[_k.strip()] = _v.strip().strip('"').strip("'")
+
 
 def build_cli_env() -> dict[str, str]:
-    """Build env vars for the Claude CLI subprocess. Enables Bedrock when USE_BEDROCK=1."""
-    env: dict[str, str] = {}
-    if os.environ.get("USE_BEDROCK", "").strip() == "1":
-        env["CLAUDE_CODE_USE_BEDROCK"] = "1"
-        env["AWS_REGION"] = os.environ.get("AWS_REGION", "us-east-1")
+    """Build env vars for the Claude CLI subprocess. Hard-disables Bedrock and forces Anthropic."""
+    # Mask any AWS/Bedrock variables that might be in the system's process environment
+    # By setting them to empty string, we prevent the SDK from auto-detecting Bedrock.
+    env: dict[str, str] = {
+        "CLAUDE_CODE_USE_BEDROCK": "0",
+        "CLAUDE_CODE_USE_BEDROCK_AGENT": "0",
+        "AWS_REGION": "",
+        "AWS_ACCESS_KEY_ID": "",
+        "AWS_SECRET_ACCESS_KEY": "",
+        "AWS_SESSION_TOKEN": "",
+        "BEDROCK_API_KEY": "",
+        "ANTHROPIC_MODEL": "claude-sonnet-4-5",  # Explicit Anthropic model — never a Bedrock ID
+    }
+    
+    # Ensure ANTHROPIC_API_KEY is explicitly passed
+    if "ANTHROPIC_API_KEY" in os.environ:
+        env["ANTHROPIC_API_KEY"] = os.environ["ANTHROPIC_API_KEY"]
+    
     return env
 
 
@@ -489,7 +515,8 @@ def make_agent_options(
         },
         tools=base_tools,
         allowed_tools=base_tools + mcp_tool_permissions,
-        setting_sources=["project"],
+        model="claude-sonnet-4-5",          # Explicit Anthropic model name — no Bedrock prefix
+        setting_sources=[],                  # Never load disk settings that may have stale Bedrock model IDs
         system_prompt=system_prompt,
         permission_mode="bypassPermissions",
         cwd=str(agent_cwd),

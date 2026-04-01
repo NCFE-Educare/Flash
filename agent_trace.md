@@ -4247,3 +4247,79 @@ USER: Hello
 [Agent: Main agent]
 Hello! How can I help you today?
 [Result] turns=1 duration=3374ms
+
+======================================================================
+=== Session 111 | 2026-04-01 09:52:27 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+API Error: 400 Operation not allowed
+[Result] turns=1 duration=1793ms
+
+======================================================================
+=== Session 112 | 2026-04-01 09:54:40 ===
+
+USER: hey
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+API Error: 400 Operation not allowed
+[Result] turns=1 duration=1825ms
+
+======================================================================
+=== Session 113 | 2026-04-01 10:23:22 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+API Error: 400 Operation not allowed
+[Result] turns=1 duration=1701ms
+
+======================================================================
+=== Session 114 | 2026-04-01 11:26:40 ===
+
+USER: hello
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+Hello, Vanshi! Good to hear from you.
+
+I'm ready to help you with whatever you need—whether it's managing your emails, creating documents and presentations, working with spreadsheets, scheduling calendar events, setting reminders, researching information, or anything else.
+
+What would you like to work on today?
+[Result] turns=1 duration=7473ms
+
+======================================================================
+=== Session 114 | 2026-04-01 11:27:15 ===
+
+USER: what can u do for me?
+
+----------------------------------------------------------------------
+[Agent: Main agent]
+[Agent: Main agent]
+I'm a comprehensive AI assistant with access to your Google Workspace and local system. Here's what I can help you with:
+
+**Google Workspace Integration:**
+I can manage your entire Google ecosystem—read and send emails, create and format spreadsheets with charts and conditional formatting, build presentations with styling, create forms and surveys, manage your calendar and create Meet links, organize Drive files, and handle Google Classroom tasks like assignments and grading.
+
+**Data & Analysis:**
+I can create professional spreadsheets with advanced formatting (colored headers, borders, auto-fitted columns, merged cells), generate charts and visualizations, analyze data patterns, and build comprehensive reports with proper styling.
+
+**Research & Information:**
+I can search the web for current information, research technical topics, compare products or services, gather data, and provide detailed analysis on any subject you need.
+
+**Productivity:**
+I can set reminders (relative like "in 20 seconds" or absolute like "tomorrow at 9am"), organize your files, automate repetitive tasks, draft professional emails, and help manage your workflow.
+
+**Technical Work:**
+I can read and write code, execute bash commands, manage files in your working directory, debug issues, and handle system-level tasks.
+
+**Document Creation:**
+I can create Google Docs, Slides presentations, Forms, and formatted spreadsheets—all with professional styling and structure.
+
+What would you like help with today? Whether it's managing emails, creating a presentation, analyzing data, or something else entirely, I'm ready to assist.
+[Result] turns=1 duration=15021ms
