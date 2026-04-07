@@ -24,6 +24,8 @@ from pydantic import BaseModel, EmailStr
 
 from auth import create_access_token, decode_access_token, hash_password, verify_password
 from database import (
+    _get_conn,
+    _rows,
     add_message,
     create_session,
     create_user,
@@ -52,12 +54,48 @@ from database import (
     get_slides_tokens,
     get_forms_tokens,
     get_user_by_email,
+    get_user_by_id,
     get_session_by_title,
     init_db,
     mark_reminder_delivered,
     rename_session,
     save_claude_session_id,
     get_or_create_gchat_session,
+    # Kanban imports
+    create_workspace,
+    get_workspace,
+    get_user_workspaces,
+    update_workspace,
+    delete_workspace,
+    is_workspace_member,
+    is_workspace_owner,
+    get_workspace_members,
+    add_workspace_member,
+    remove_workspace_member,
+    create_workspace_invitation,
+    get_invitation_by_token,
+    accept_invitation,
+    decline_invitation,
+    get_pending_invitations_by_email,
+    get_workspace_columns,
+    create_column,
+    update_column,
+    delete_column,
+    create_task,
+    get_task,
+    get_workspace_tasks,
+    update_task,
+    delete_task,
+    create_task_comment,
+    get_task_comments,
+    delete_task_comment,
+    create_task_attachment,
+    get_task_attachments,
+    delete_task_attachment,
+    get_workspace_activity,
+    get_workspace_analytics,
+    get_user_analytics,
+    get_global_analytics,
 )
 
 # ---------------------------------------------------------------------------
@@ -2304,3 +2342,791 @@ async def update_user_memory(
     if not ok:
         raise HTTPException(status_code=404, detail="Memory not found or update failed")
     return {"updated": True}
+
+
+# ---------------------------------------------------------------------------
+# Kanban Board System
+# ---------------------------------------------------------------------------
+
+# Pydantic models for request bodies
+class CreateWorkspaceRequest(BaseModel):
+    name: str
+    description: str | None = None
+
+
+class UpdateWorkspaceRequest(BaseModel):
+    name: str | None = None
+    description: str | None = None
+
+
+class InviteMemberRequest(BaseModel):
+    email: EmailStr
+
+
+class CreateColumnRequest(BaseModel):
+    name: str
+    position: int
+    color: str = "#808080"
+
+
+class UpdateColumnRequest(BaseModel):
+    name: str | None = None
+    position: int | None = None
+    color: str | None = None
+
+
+class CreateTaskRequest(BaseModel):
+    column_id: int
+    title: str
+    description: str | None = None
+    assignee_email: EmailStr | None = None
+    priority: str = "medium"
+    due_date: str | None = None
+    position: int = 0
+
+
+class UpdateTaskRequest(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    column_id: int | None = None
+    assignee_email: EmailStr | None = None
+    priority: str | None = None
+    due_date: str | None = None
+    position: int | None = None
+
+
+class CreateCommentRequest(BaseModel):
+    comment: str
+
+
+# ---------------------------------------------------------------------------
+# Workspace Endpoints
+# ---------------------------------------------------------------------------
+
+@app.post("/workspaces", status_code=201, tags=["Kanban - Workspaces"])
+def create_workspace_endpoint(
+    body: CreateWorkspaceRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Create a new workspace. User becomes the owner."""
+    user_id = int(current_user["sub"])
+    workspace = create_workspace(body.name, body.description, user_id)
+    return {"workspace": workspace}
+
+
+@app.get("/workspaces", tags=["Kanban - Workspaces"])
+def list_user_workspaces(current_user: dict = Depends(get_current_user)):
+    """List all workspaces the user is a member of."""
+    user_id = int(current_user["sub"])
+    workspaces = get_user_workspaces(user_id)
+    return {"workspaces": workspaces}
+
+
+@app.get("/workspaces/{workspace_id}", tags=["Kanban - Workspaces"])
+def get_workspace_endpoint(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get workspace details. User must be a member."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    workspace = get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    members = get_workspace_members(workspace_id)
+    columns = get_workspace_columns(workspace_id)
+    tasks = get_workspace_tasks(workspace_id)
+
+    return {
+        "workspace": workspace,
+        "members": members,
+        "columns": columns,
+        "tasks": tasks,
+    }
+
+
+@app.put("/workspaces/{workspace_id}", tags=["Kanban - Workspaces"])
+def update_workspace_endpoint(
+    workspace_id: int,
+    body: UpdateWorkspaceRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update workspace details. User must be the owner."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_owner(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Only workspace owner can update")
+
+    workspace = update_workspace(workspace_id, body.name, body.description)
+    return {"workspace": workspace}
+
+
+@app.delete("/workspaces/{workspace_id}", tags=["Kanban - Workspaces"])
+def delete_workspace_endpoint(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete workspace. User must be the owner."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_owner(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Only workspace owner can delete")
+
+    deleted = delete_workspace(workspace_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Workspace Members & Invitations
+# ---------------------------------------------------------------------------
+
+@app.get("/workspaces/{workspace_id}/members", tags=["Kanban - Members & Invitations"])
+def list_workspace_members(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all members of a workspace."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    members = get_workspace_members(workspace_id)
+    return {"members": members}
+
+
+@app.post("/workspaces/{workspace_id}/invite", tags=["Kanban - Members & Invitations"])
+def invite_member(
+    workspace_id: int,
+    body: InviteMemberRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Invite a user to workspace by email. Sends notification email."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    workspace = get_workspace(workspace_id)
+    if not workspace:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+
+    # Check if user exists
+    invited_user = get_user_by_email(body.email)
+
+    if invited_user:
+        # User exists - add directly to workspace
+        member = add_workspace_member(workspace_id, invited_user["id"])
+        if not member:
+            raise HTTPException(status_code=400, detail="User is already a member")
+
+        # Send email notification
+        from email_notifications import send_workspace_invitation_email
+        workspace_link = f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/workspaces/{workspace_id}"
+        current_user_info = get_user_by_id(user_id)
+        send_workspace_invitation_email(
+            body.email,
+            workspace["name"],
+            current_user_info["username"] if current_user_info else "A team member",
+            workspace_link,
+            user_exists=True
+        )
+
+        return {
+            "message": "User added to workspace",
+            "member": member,
+            "user_exists": True,
+        }
+    else:
+        # User doesn't exist - create invitation
+        from datetime import datetime, timedelta, timezone
+
+        token = str(uuid.uuid4())
+        expires_at = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+
+        invitation = create_workspace_invitation(
+            workspace_id, body.email, user_id, token, expires_at
+        )
+
+        # Send invitation email with signup link
+        from email_notifications import send_workspace_invitation_email
+        invitation_link = f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/invitations/accept?token={token}"
+        current_user_info = get_user_by_id(user_id)
+        send_workspace_invitation_email(
+            body.email,
+            workspace["name"],
+            current_user_info["username"] if current_user_info else "A team member",
+            invitation_link,
+            user_exists=False
+        )
+
+        return {
+            "message": "Invitation sent",
+            "invitation": invitation,
+            "user_exists": False,
+        }
+
+
+@app.get("/invitations/accept", tags=["Kanban - Members & Invitations"])
+def accept_invitation_endpoint(token: str, current_user: dict = Depends(get_current_user)):
+    """Accept a workspace invitation."""
+    user_id = int(current_user["sub"])
+
+    invitation = get_invitation_by_token(token)
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+
+    if invitation["status"] != "pending":
+        raise HTTPException(status_code=400, detail="Invitation already processed")
+
+    # Check if expired
+    from datetime import datetime, timezone
+    expires_at = datetime.fromisoformat(invitation["expires_at"])
+    if expires_at < datetime.now(timezone.utc):
+        raise HTTPException(status_code=400, detail="Invitation expired")
+
+    # Accept invitation
+    accepted = accept_invitation(invitation["id"], user_id)
+    if not accepted:
+        raise HTTPException(status_code=500, detail="Failed to accept invitation")
+
+    workspace = get_workspace(invitation["workspace_id"])
+    return {
+        "message": "Invitation accepted",
+        "workspace": workspace,
+    }
+
+
+@app.get("/invitations/pending", tags=["Kanban - Members & Invitations"])
+def list_pending_invitations(current_user: dict = Depends(get_current_user)):
+    """List all pending invitations for the current user's email."""
+    user_id = int(current_user["sub"])
+    user = get_user_by_id(user_id)
+    if not user:
+        return {"invitations": []}
+
+    invitations = get_pending_invitations_by_email(user["email"])
+    return {"invitations": invitations}
+
+
+@app.delete("/workspaces/{workspace_id}/members/{member_user_id}", tags=["Kanban - Members & Invitations"])
+def remove_member(
+    workspace_id: int,
+    member_user_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Remove a member from workspace. Owner only."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_owner(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Only workspace owner can remove members")
+
+    removed = remove_workspace_member(workspace_id, member_user_id)
+    if not removed:
+        raise HTTPException(status_code=400, detail="Cannot remove member (might be owner)")
+
+    return {"removed": True}
+
+
+# ---------------------------------------------------------------------------
+# Columns
+# ---------------------------------------------------------------------------
+
+@app.get("/workspaces/{workspace_id}/columns", tags=["Kanban - Columns"])
+def list_columns(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all columns in workspace."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    columns = get_workspace_columns(workspace_id)
+    return {"columns": columns}
+
+
+@app.post("/workspaces/{workspace_id}/columns", status_code=201, tags=["Kanban - Columns"])
+def create_column_endpoint(
+    workspace_id: int,
+    body: CreateColumnRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Create a custom column."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    column = create_column(workspace_id, body.name, body.position, body.color)
+    return {"column": column}
+
+
+@app.put("/columns/{column_id}", tags=["Kanban - Columns"])
+def update_column_endpoint(
+    column_id: int,
+    body: UpdateColumnRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update column details."""
+    # TODO: Add workspace membership check
+    column = update_column(column_id, body.name, body.position, body.color)
+    return {"column": column}
+
+
+@app.delete("/columns/{column_id}", tags=["Kanban - Columns"])
+def delete_column_endpoint(
+    column_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a column (only if no tasks in it)."""
+    # TODO: Add workspace membership check
+    deleted = delete_column(column_id)
+    if not deleted:
+        raise HTTPException(status_code=400, detail="Cannot delete column (may have tasks)")
+
+    return {"deleted": True}
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+@app.get("/workspaces/{workspace_id}/tasks", tags=["Kanban - Tasks"])
+def list_tasks(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all tasks in workspace."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    tasks = get_workspace_tasks(workspace_id)
+    return {"tasks": tasks}
+
+
+@app.post("/workspaces/{workspace_id}/tasks", status_code=201, tags=["Kanban - Tasks"])
+def create_task_endpoint(
+    workspace_id: int,
+    body: CreateTaskRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Create a new task."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    # Get assignee if email provided
+    assignee_id = None
+    if body.assignee_email:
+        assignee = get_user_by_email(body.assignee_email)
+        if not assignee:
+            raise HTTPException(status_code=404, detail=f"User {body.assignee_email} not found")
+
+        if not is_workspace_member(workspace_id, assignee["id"]):
+            raise HTTPException(status_code=400, detail="Assignee is not a workspace member")
+
+        assignee_id = assignee["id"]
+
+    task = create_task(
+        workspace_id,
+        body.column_id,
+        body.title,
+        body.description,
+        user_id,
+        assignee_id,
+        body.priority,
+        body.due_date,
+        body.position,
+    )
+
+    # Send email to assignee
+    if assignee_id:
+        from email_notifications import send_task_assigned_email
+        assignee = get_user_by_email(body.assignee_email)
+        reporter = get_user_by_id(user_id)
+        workspace = get_workspace(workspace_id)
+
+        task_link = f"{os.getenv('FRONTEND_URL', 'http://localhost:3000')}/tasks/{task['id']}"
+        send_task_assigned_email(
+            assignee["email"],
+            task["title"],
+            task["description"],
+            reporter["username"] if reporter else "A team member",
+            workspace["name"],
+            task_link,
+            task["priority"],
+            task["due_date"]
+        )
+
+    return {"task": task}
+
+
+@app.get("/tasks/{task_id}", tags=["Kanban - Tasks"])
+def get_task_endpoint(
+    task_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get task details with comments and attachments."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    comments = get_task_comments(task_id)
+    attachments = get_task_attachments(task_id)
+
+    return {
+        "task": task,
+        "comments": comments,
+        "attachments": attachments,
+    }
+
+
+@app.patch("/tasks/{task_id}", tags=["Kanban - Tasks"])
+def update_task_endpoint(
+    task_id: int,
+    body: UpdateTaskRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Update task details (move columns, edit, reassign, etc.)."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    # Get assignee if email provided
+    assignee_id = None
+    if body.assignee_email is not None:
+        if body.assignee_email:  # Not empty string
+            assignee = get_user_by_email(body.assignee_email)
+            if not assignee:
+                raise HTTPException(status_code=404, detail=f"User {body.assignee_email} not found")
+            assignee_id = assignee["id"]
+        # else: empty string means unassign (assignee_id stays None)
+
+    updated_task = update_task(
+        task_id,
+        title=body.title,
+        description=body.description,
+        column_id=body.column_id,
+        assignee_id=assignee_id,
+        priority=body.priority,
+        due_date=body.due_date,
+        position=body.position,
+        user_id=user_id,
+    )
+
+    return {"task": updated_task}
+
+
+@app.delete("/tasks/{task_id}", tags=["Kanban - Tasks"])
+def delete_task_endpoint(
+    task_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """Delete a task."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    deleted = delete_task(task_id, user_id)
+    return {"deleted": deleted}
+
+
+# ---------------------------------------------------------------------------
+# Comments
+# ---------------------------------------------------------------------------
+
+@app.post("/tasks/{task_id}/comments", status_code=201, tags=["Kanban - Comments"])
+def add_comment(
+    task_id: int,
+    body: CreateCommentRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """Add a comment to a task."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    comment = create_task_comment(task_id, user_id, body.comment)
+    return {"comment": comment}
+
+
+@app.get("/tasks/{task_id}/comments", tags=["Kanban - Comments"])
+def list_comments(
+    task_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all comments for a task."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    comments = get_task_comments(task_id)
+    return {"comments": comments}
+
+
+# ---------------------------------------------------------------------------
+# Attachments
+# ---------------------------------------------------------------------------
+
+@app.post("/tasks/{task_id}/attachments", status_code=201, tags=["Kanban - Attachments"])
+async def upload_attachment(
+    task_id: int,
+    file: UploadFile = File(...),
+    current_user: dict = Depends(get_current_user),
+):
+    """Upload a file attachment to a task."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    # Save file
+    file_ext = Path(file.filename).suffix if file.filename else ""
+    safe_filename = f"{uuid.uuid4()}{file_ext}"
+    file_path = UPLOADS_DIR / safe_filename
+
+    with open(file_path, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    file_url = f"/uploads/{safe_filename}"
+    file_size = len(content)
+
+    attachment = create_task_attachment(
+        task_id, user_id, file.filename or safe_filename, file_url, file.content_type, file_size
+    )
+
+    return {"attachment": attachment}
+
+
+@app.get("/tasks/{task_id}/attachments", tags=["Kanban - Attachments"])
+def list_attachments(
+    task_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """List all attachments for a task."""
+    user_id = int(current_user["sub"])
+
+    task = get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    if not is_workspace_member(task["workspace_id"], user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    attachments = get_task_attachments(task_id)
+    return {"attachments": attachments}
+
+
+# ---------------------------------------------------------------------------
+# Activity Log
+# ---------------------------------------------------------------------------
+
+@app.get("/workspaces/{workspace_id}/activity", tags=["Kanban - Activity"])
+def get_activity(
+    workspace_id: int,
+    limit: int = 50,
+    current_user: dict = Depends(get_current_user),
+):
+    """Get recent activity log for a workspace."""
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    activity = get_workspace_activity(workspace_id, limit)
+    return {"activity": activity}
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Dashboard
+# ---------------------------------------------------------------------------
+
+@app.get("/workspaces/{workspace_id}/analytics", tags=["Kanban - Analytics"])
+def get_workspace_analytics_endpoint(
+    workspace_id: int,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    Get comprehensive analytics for a workspace.
+
+    Returns:
+    - Task distribution by column (for Kanban view)
+    - Task distribution by priority (pie chart)
+    - Task distribution by assignee (bar chart)
+    - Overdue tasks list
+    - Completion rate
+    - Tasks created over time (line chart)
+    - Member activity stats
+    """
+    user_id = int(current_user["sub"])
+
+    if not is_workspace_member(workspace_id, user_id):
+        raise HTTPException(status_code=403, detail="Not a member of this workspace")
+
+    analytics = get_workspace_analytics(workspace_id)
+    return analytics
+
+
+@app.get("/analytics/me", tags=["Kanban - Analytics"])
+def get_my_analytics(current_user: dict = Depends(get_current_user)):
+    """
+    Get analytics for the current user across all workspaces.
+
+    Returns:
+    - My assigned tasks
+    - Tasks by status
+    - Overdue count
+    - Tasks by workspace
+    - Activity stats (tasks created, comments, files)
+    """
+    user_id = int(current_user["sub"])
+    analytics = get_user_analytics(user_id)
+    return analytics
+
+
+@app.get("/analytics/global", tags=["Kanban - Analytics"])
+def get_global_analytics_endpoint(current_user: dict = Depends(get_current_user)):
+    """
+    Get system-wide analytics (for admins or overview dashboard).
+
+    Returns:
+    - Total workspaces, users, tasks
+    - Most active workspaces
+    - Most active users
+    - Tasks trend over time
+    """
+    # Note: In a real app, you might want to restrict this to admins only
+    analytics = get_global_analytics()
+    return analytics
+
+
+@app.get("/dashboard/summary", tags=["Kanban - Dashboard"])
+def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
+    """
+    Get a quick summary for the user's dashboard.
+
+    Returns key metrics for quick overview.
+    """
+    user_id = int(current_user["sub"])
+
+    with _get_conn() as conn:
+        # My workspaces count
+        workspaces_count = conn.execute(
+            """
+            SELECT COUNT(DISTINCT w.id)
+            FROM workspaces w
+            JOIN workspace_members wm ON w.id = wm.workspace_id
+            WHERE wm.user_id = ?
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        # My active tasks (not in Done)
+        active_tasks = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ? AND c.name != 'Done'
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        # My overdue tasks
+        overdue_tasks = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ?
+              AND t.due_date < datetime('now')
+              AND c.name != 'Done'
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        # My completed tasks (this week)
+        completed_this_week = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ?
+              AND c.name = 'Done'
+              AND t.updated_at >= datetime('now', '-7 days')
+            """,
+            (user_id,),
+        ).fetchone()[0]
+
+        # Pending invitations
+        user = get_user_by_id(user_id)
+        pending_invitations = 0
+        if user:
+            from database import get_pending_invitations_by_email
+            pending_invitations = len(get_pending_invitations_by_email(user["email"]))
+
+        # Recent tasks assigned to me (next 5 due)
+        recent_tasks = _rows(
+            conn,
+            """
+            SELECT t.id, t.title, t.priority, t.due_date, w.name as workspace_name, c.name as column_name
+            FROM tasks t
+            JOIN workspaces w ON t.workspace_id = w.id
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ? AND c.name != 'Done'
+            ORDER BY t.due_date ASC NULLS LAST
+            LIMIT 5
+            """,
+            (user_id,),
+        )
+
+    return {
+        "workspaces_count": workspaces_count,
+        "active_tasks": active_tasks,
+        "overdue_tasks": overdue_tasks,
+        "completed_this_week": completed_this_week,
+        "pending_invitations": pending_invitations,
+        "upcoming_tasks": recent_tasks,
+    }

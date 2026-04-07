@@ -194,6 +194,90 @@ def init_db() -> None:
                 delivered    INTEGER NOT NULL DEFAULT 0,
                 created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
+
+            -- Kanban Board System Tables
+
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                name             TEXT NOT NULL,
+                description      TEXT,
+                owner_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS workspace_members (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id     INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                role             TEXT NOT NULL CHECK(role IN ('owner', 'member')) DEFAULT 'member',
+                added_at         TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(workspace_id, user_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS workspace_invitations (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id     INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                email            TEXT NOT NULL,
+                invited_by       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token            TEXT UNIQUE NOT NULL,
+                status           TEXT CHECK(status IN ('pending', 'accepted', 'declined')) DEFAULT 'pending',
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at       TIMESTAMP NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS board_columns (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id     INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                name             TEXT NOT NULL,
+                position         INTEGER NOT NULL DEFAULT 0,
+                color            TEXT DEFAULT '#808080',
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS tasks (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id     INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                column_id        INTEGER NOT NULL REFERENCES board_columns(id) ON DELETE CASCADE,
+                title            TEXT NOT NULL,
+                description      TEXT,
+                assignee_id      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+                reporter_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                priority         TEXT CHECK(priority IN ('low', 'medium', 'high', 'urgent')) DEFAULT 'medium',
+                due_date         TIMESTAMP,
+                position         INTEGER NOT NULL DEFAULT 0,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS task_comments (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id          INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                comment          TEXT NOT NULL,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS task_attachments (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id          INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                file_name        TEXT NOT NULL,
+                file_url         TEXT NOT NULL,
+                file_type        TEXT,
+                file_size        INTEGER,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+
+            CREATE TABLE IF NOT EXISTS activity_log (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                workspace_id     INTEGER NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+                task_id          INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+                user_id          INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                action           TEXT NOT NULL,
+                description      TEXT NOT NULL,
+                created_at       TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
         """)
         conn.commit()
 
@@ -872,3 +956,900 @@ def delete_reminder(reminder_id: int, user_id: int) -> bool:
         )
         conn.commit()
         return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Workspaces
+# ---------------------------------------------------------------------------
+
+def create_workspace(name: str, description: str | None, owner_id: int) -> dict:
+    """Create a new workspace and add default columns."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO workspaces (name, description, owner_id) VALUES (?, ?, ?)",
+            (name, description, owner_id),
+        )
+        workspace_id = cur.lastrowid
+
+        # Add owner as member
+        conn.execute(
+            "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+            (workspace_id, owner_id, "owner"),
+        )
+
+        # Create default columns
+        default_columns = [
+            ("To Do", 0, "#6B7280"),
+            ("In Progress", 1, "#3B82F6"),
+            ("Review", 2, "#F59E0B"),
+            ("Done", 3, "#10B981"),
+        ]
+        for col_name, position, color in default_columns:
+            conn.execute(
+                "INSERT INTO board_columns (workspace_id, name, position, color) VALUES (?, ?, ?, ?)",
+                (workspace_id, col_name, position, color),
+            )
+
+        # Log activity
+        conn.execute(
+            "INSERT INTO activity_log (workspace_id, user_id, action, description) VALUES (?, ?, ?, ?)",
+            (workspace_id, owner_id, "workspace_created", f"Created workspace '{name}'"),
+        )
+
+        conn.commit()
+        return _row(conn, "SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+
+
+def get_workspace(workspace_id: int) -> dict | None:
+    """Get workspace details."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+
+
+def get_user_workspaces(user_id: int) -> list[dict]:
+    """Get all workspaces the user is a member of."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT w.* FROM workspaces w
+            JOIN workspace_members wm ON w.id = wm.workspace_id
+            WHERE wm.user_id = ?
+            ORDER BY w.updated_at DESC
+            """,
+            (user_id,),
+        )
+
+
+def update_workspace(workspace_id: int, name: str | None, description: str | None) -> dict | None:
+    """Update workspace details."""
+    with _get_conn() as conn:
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+
+        if not updates:
+            return get_workspace(workspace_id)
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(workspace_id)
+
+        conn.execute(
+            f"UPDATE workspaces SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return _row(conn, "SELECT * FROM workspaces WHERE id = ?", (workspace_id,))
+
+
+def delete_workspace(workspace_id: int) -> bool:
+    """Delete a workspace and all its data (cascades to members, tasks, etc.)."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM workspaces WHERE id = ?", (workspace_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def is_workspace_member(workspace_id: int, user_id: int) -> bool:
+    """Check if user is a member of workspace."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ?",
+            (workspace_id, user_id),
+        ).fetchone()
+        return row is not None
+
+
+def is_workspace_owner(workspace_id: int, user_id: int) -> bool:
+    """Check if user is the owner of workspace."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND role = 'owner'",
+            (workspace_id, user_id),
+        ).fetchone()
+        return row is not None
+
+
+# ---------------------------------------------------------------------------
+# Workspace Members
+# ---------------------------------------------------------------------------
+
+def get_workspace_members(workspace_id: int) -> list[dict]:
+    """Get all members of a workspace with user details."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT wm.*, u.email, u.username
+            FROM workspace_members wm
+            JOIN users u ON wm.user_id = u.id
+            WHERE wm.workspace_id = ?
+            ORDER BY wm.added_at ASC
+            """,
+            (workspace_id,),
+        )
+
+
+def add_workspace_member(workspace_id: int, user_id: int) -> dict | None:
+    """Add a user to workspace as member."""
+    with _get_conn() as conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+                (workspace_id, user_id, "member"),
+            )
+            conn.commit()
+            return _row(conn, "SELECT * FROM workspace_members WHERE id = ?", (cur.lastrowid,))
+        except sqlite3.IntegrityError:
+            return None  # Already a member
+
+
+def remove_workspace_member(workspace_id: int, user_id: int) -> bool:
+    """Remove a member from workspace (cannot remove owner)."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM workspace_members WHERE workspace_id = ? AND user_id = ? AND role != 'owner'",
+            (workspace_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Workspace Invitations
+# ---------------------------------------------------------------------------
+
+def create_workspace_invitation(workspace_id: int, email: str, invited_by: int, token: str, expires_at: str) -> dict:
+    """Create a pending invitation."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO workspace_invitations (workspace_id, email, invited_by, token, expires_at) VALUES (?, ?, ?, ?, ?)",
+            (workspace_id, email, invited_by, token, expires_at),
+        )
+        conn.commit()
+        return _row(conn, "SELECT * FROM workspace_invitations WHERE id = ?", (cur.lastrowid,))
+
+
+def get_invitation_by_token(token: str) -> dict | None:
+    """Get invitation by token."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM workspace_invitations WHERE token = ?", (token,))
+
+
+def accept_invitation(invitation_id: int, user_id: int) -> bool:
+    """Accept an invitation and add user to workspace."""
+    with _get_conn() as conn:
+        invitation = _row(conn, "SELECT * FROM workspace_invitations WHERE id = ?", (invitation_id,))
+        if not invitation or invitation["status"] != "pending":
+            return False
+
+        # Add user to workspace
+        try:
+            conn.execute(
+                "INSERT INTO workspace_members (workspace_id, user_id, role) VALUES (?, ?, ?)",
+                (invitation["workspace_id"], user_id, "member"),
+            )
+        except sqlite3.IntegrityError:
+            pass  # Already a member
+
+        # Mark invitation as accepted
+        conn.execute(
+            "UPDATE workspace_invitations SET status = 'accepted' WHERE id = ?",
+            (invitation_id,),
+        )
+
+        # Log activity
+        workspace = get_workspace(invitation["workspace_id"])
+        conn.execute(
+            "INSERT INTO activity_log (workspace_id, user_id, action, description) VALUES (?, ?, ?, ?)",
+            (invitation["workspace_id"], user_id, "member_joined", f"Joined workspace '{workspace['name']}'"),
+        )
+
+        conn.commit()
+        return True
+
+
+def decline_invitation(invitation_id: int) -> bool:
+    """Decline an invitation."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "UPDATE workspace_invitations SET status = 'declined' WHERE id = ? AND status = 'pending'",
+            (invitation_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def get_pending_invitations_by_email(email: str) -> list[dict]:
+    """Get all pending invitations for an email."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT wi.*, w.name as workspace_name, u.username as inviter_name
+            FROM workspace_invitations wi
+            JOIN workspaces w ON wi.workspace_id = w.id
+            JOIN users u ON wi.invited_by = u.id
+            WHERE wi.email = ? AND wi.status = 'pending'
+            ORDER BY wi.created_at DESC
+            """,
+            (email,),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Board Columns
+# ---------------------------------------------------------------------------
+
+def get_workspace_columns(workspace_id: int) -> list[dict]:
+    """Get all columns for a workspace."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            "SELECT * FROM board_columns WHERE workspace_id = ? ORDER BY position ASC",
+            (workspace_id,),
+        )
+
+
+def create_column(workspace_id: int, name: str, position: int, color: str = "#808080") -> dict:
+    """Create a new column."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO board_columns (workspace_id, name, position, color) VALUES (?, ?, ?, ?)",
+            (workspace_id, name, position, color),
+        )
+        conn.commit()
+        return _row(conn, "SELECT * FROM board_columns WHERE id = ?", (cur.lastrowid,))
+
+
+def update_column(column_id: int, name: str | None, position: int | None, color: str | None) -> dict | None:
+    """Update column details."""
+    with _get_conn() as conn:
+        updates = []
+        params = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if position is not None:
+            updates.append("position = ?")
+            params.append(position)
+        if color is not None:
+            updates.append("color = ?")
+            params.append(color)
+
+        if not updates:
+            return _row(conn, "SELECT * FROM board_columns WHERE id = ?", (column_id,))
+
+        params.append(column_id)
+        conn.execute(
+            f"UPDATE board_columns SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+        conn.commit()
+        return _row(conn, "SELECT * FROM board_columns WHERE id = ?", (column_id,))
+
+
+def delete_column(column_id: int) -> bool:
+    """Delete a column (will fail if tasks exist in it due to foreign key)."""
+    with _get_conn() as conn:
+        cur = conn.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Tasks
+# ---------------------------------------------------------------------------
+
+def create_task(
+    workspace_id: int,
+    column_id: int,
+    title: str,
+    description: str | None,
+    reporter_id: int,
+    assignee_id: int | None = None,
+    priority: str = "medium",
+    due_date: str | None = None,
+    position: int = 0,
+) -> dict:
+    """Create a new task."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            """
+            INSERT INTO tasks (workspace_id, column_id, title, description, reporter_id, assignee_id, priority, due_date, position)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (workspace_id, column_id, title, description, reporter_id, assignee_id, priority, due_date, position),
+        )
+        task_id = cur.lastrowid
+
+        # Update workspace timestamp
+        conn.execute(
+            "UPDATE workspaces SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (workspace_id,),
+        )
+
+        # Log activity
+        assignee_name = ""
+        if assignee_id:
+            assignee = _row(conn, "SELECT username FROM users WHERE id = ?", (assignee_id,))
+            assignee_name = f" to {assignee['username']}" if assignee else ""
+
+        conn.execute(
+            "INSERT INTO activity_log (workspace_id, task_id, user_id, action, description) VALUES (?, ?, ?, ?, ?)",
+            (workspace_id, task_id, reporter_id, "task_created", f"Created task '{title}'{assignee_name}"),
+        )
+
+        conn.commit()
+        return _row(conn, "SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+
+def get_task(task_id: int) -> dict | None:
+    """Get task details."""
+    with _get_conn() as conn:
+        return _row(conn, "SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+
+def get_workspace_tasks(workspace_id: int) -> list[dict]:
+    """Get all tasks in a workspace with user details."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT t.*,
+                   r.username as reporter_name, r.email as reporter_email,
+                   a.username as assignee_name, a.email as assignee_email,
+                   c.name as column_name, c.color as column_color
+            FROM tasks t
+            JOIN users r ON t.reporter_id = r.id
+            LEFT JOIN users a ON t.assignee_id = a.id
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.workspace_id = ?
+            ORDER BY c.position ASC, t.position ASC
+            """,
+            (workspace_id,),
+        )
+
+
+def update_task(
+    task_id: int,
+    title: str | None = None,
+    description: str | None = None,
+    column_id: int | None = None,
+    assignee_id: int | None = None,
+    priority: str | None = None,
+    due_date: str | None = None,
+    position: int | None = None,
+    user_id: int | None = None,
+) -> dict | None:
+    """Update task details and log activity."""
+    with _get_conn() as conn:
+        task = _row(conn, "SELECT * FROM tasks WHERE id = ?", (task_id,))
+        if not task:
+            return None
+
+        updates = []
+        params = []
+        activities = []
+
+        if title is not None and title != task["title"]:
+            updates.append("title = ?")
+            params.append(title)
+            activities.append(f"Updated title to '{title}'")
+
+        if description is not None:
+            updates.append("description = ?")
+            params.append(description)
+
+        if column_id is not None and column_id != task["column_id"]:
+            updates.append("column_id = ?")
+            params.append(column_id)
+            old_col = _row(conn, "SELECT name FROM board_columns WHERE id = ?", (task["column_id"],))
+            new_col = _row(conn, "SELECT name FROM board_columns WHERE id = ?", (column_id,))
+            if old_col and new_col:
+                activities.append(f"Moved from '{old_col['name']}' to '{new_col['name']}'")
+
+        if assignee_id is not None and assignee_id != task["assignee_id"]:
+            updates.append("assignee_id = ?")
+            params.append(assignee_id)
+            assignee = _row(conn, "SELECT username FROM users WHERE id = ?", (assignee_id,)) if assignee_id else None
+            if assignee:
+                activities.append(f"Assigned to {assignee['username']}")
+            else:
+                activities.append("Unassigned")
+
+        if priority is not None and priority != task["priority"]:
+            updates.append("priority = ?")
+            params.append(priority)
+            activities.append(f"Changed priority to {priority}")
+
+        if due_date is not None:
+            updates.append("due_date = ?")
+            params.append(due_date)
+
+        if position is not None:
+            updates.append("position = ?")
+            params.append(position)
+
+        if not updates:
+            return task
+
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(task_id)
+
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
+
+        # Log activities
+        if user_id and activities:
+            for activity in activities:
+                conn.execute(
+                    "INSERT INTO activity_log (workspace_id, task_id, user_id, action, description) VALUES (?, ?, ?, ?, ?)",
+                    (task["workspace_id"], task_id, user_id, "task_updated", activity),
+                )
+
+        # Update workspace timestamp
+        conn.execute(
+            "UPDATE workspaces SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (task["workspace_id"],),
+        )
+
+        conn.commit()
+        return _row(conn, "SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+
+def delete_task(task_id: int, user_id: int | None = None) -> bool:
+    """Delete a task and log activity."""
+    with _get_conn() as conn:
+        task = _row(conn, "SELECT * FROM tasks WHERE id = ?", (task_id,))
+        if not task:
+            return False
+
+        if user_id:
+            conn.execute(
+                "INSERT INTO activity_log (workspace_id, task_id, user_id, action, description) VALUES (?, ?, ?, ?, ?)",
+                (task["workspace_id"], task_id, user_id, "task_deleted", f"Deleted task '{task['title']}'"),
+            )
+
+        cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Task Comments
+# ---------------------------------------------------------------------------
+
+def create_task_comment(task_id: int, user_id: int, comment: str) -> dict:
+    """Add a comment to a task."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO task_comments (task_id, user_id, comment) VALUES (?, ?, ?)",
+            (task_id, user_id, comment),
+        )
+        comment_id = cur.lastrowid
+
+        # Log activity
+        task = _row(conn, "SELECT workspace_id FROM tasks WHERE id = ?", (task_id,))
+        if task:
+            conn.execute(
+                "INSERT INTO activity_log (workspace_id, task_id, user_id, action, description) VALUES (?, ?, ?, ?, ?)",
+                (task["workspace_id"], task_id, user_id, "comment_added", "Added a comment"),
+            )
+
+        conn.commit()
+        return _row(conn, "SELECT * FROM task_comments WHERE id = ?", (comment_id,))
+
+
+def get_task_comments(task_id: int) -> list[dict]:
+    """Get all comments for a task with user details."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT tc.*, u.username, u.email
+            FROM task_comments tc
+            JOIN users u ON tc.user_id = u.id
+            WHERE tc.task_id = ?
+            ORDER BY tc.created_at ASC
+            """,
+            (task_id,),
+        )
+
+
+def delete_task_comment(comment_id: int, user_id: int) -> bool:
+    """Delete a comment (only by the user who created it)."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM task_comments WHERE id = ? AND user_id = ?",
+            (comment_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Task Attachments
+# ---------------------------------------------------------------------------
+
+def create_task_attachment(task_id: int, user_id: int, file_name: str, file_url: str, file_type: str | None, file_size: int | None) -> dict:
+    """Add an attachment to a task."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO task_attachments (task_id, user_id, file_name, file_url, file_type, file_size) VALUES (?, ?, ?, ?, ?, ?)",
+            (task_id, user_id, file_name, file_url, file_type, file_size),
+        )
+        attachment_id = cur.lastrowid
+
+        # Log activity
+        task = _row(conn, "SELECT workspace_id FROM tasks WHERE id = ?", (task_id,))
+        if task:
+            conn.execute(
+                "INSERT INTO activity_log (workspace_id, task_id, user_id, action, description) VALUES (?, ?, ?, ?, ?)",
+                (task["workspace_id"], task_id, user_id, "attachment_added", f"Uploaded file '{file_name}'"),
+            )
+
+        conn.commit()
+        return _row(conn, "SELECT * FROM task_attachments WHERE id = ?", (attachment_id,))
+
+
+def get_task_attachments(task_id: int) -> list[dict]:
+    """Get all attachments for a task."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT ta.*, u.username
+            FROM task_attachments ta
+            JOIN users u ON ta.user_id = u.id
+            WHERE ta.task_id = ?
+            ORDER BY ta.created_at DESC
+            """,
+            (task_id,),
+        )
+
+
+def delete_task_attachment(attachment_id: int, user_id: int) -> bool:
+    """Delete an attachment (only by the user who uploaded it)."""
+    with _get_conn() as conn:
+        cur = conn.execute(
+            "DELETE FROM task_attachments WHERE id = ? AND user_id = ?",
+            (attachment_id, user_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# Activity Log
+# ---------------------------------------------------------------------------
+
+def get_workspace_activity(workspace_id: int, limit: int = 50) -> list[dict]:
+    """Get recent activity for a workspace."""
+    with _get_conn() as conn:
+        return _rows(
+            conn,
+            """
+            SELECT al.*, u.username, u.email
+            FROM activity_log al
+            JOIN users u ON al.user_id = u.id
+            WHERE al.workspace_id = ?
+            ORDER BY al.created_at DESC
+            LIMIT ?
+            """,
+            (workspace_id, limit),
+        )
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Dashboard
+# ---------------------------------------------------------------------------
+
+def get_workspace_analytics(workspace_id: int) -> dict:
+    """Get comprehensive analytics for a workspace."""
+    with _get_conn() as conn:
+        # Task counts by column
+        tasks_by_column = _rows(
+            conn,
+            """
+            SELECT c.name as column_name, c.color, COUNT(t.id) as task_count
+            FROM board_columns c
+            LEFT JOIN tasks t ON c.id = t.column_id
+            WHERE c.workspace_id = ?
+            GROUP BY c.id, c.name, c.color
+            ORDER BY c.position ASC
+            """,
+            (workspace_id,),
+        )
+
+        # Task counts by priority
+        tasks_by_priority = _rows(
+            conn,
+            """
+            SELECT priority, COUNT(*) as count
+            FROM tasks
+            WHERE workspace_id = ?
+            GROUP BY priority
+            """,
+            (workspace_id,),
+        )
+
+        # Task counts by assignee
+        tasks_by_assignee = _rows(
+            conn,
+            """
+            SELECT u.username, u.email, COUNT(t.id) as task_count
+            FROM users u
+            JOIN tasks t ON u.id = t.assignee_id
+            WHERE t.workspace_id = ?
+            GROUP BY u.id, u.username, u.email
+            ORDER BY task_count DESC
+            """,
+            (workspace_id,),
+        )
+
+        # Overdue tasks
+        overdue_tasks = _rows(
+            conn,
+            """
+            SELECT t.*, u.username as assignee_name
+            FROM tasks t
+            LEFT JOIN users u ON t.assignee_id = u.id
+            WHERE t.workspace_id = ?
+              AND t.due_date IS NOT NULL
+              AND t.due_date < datetime('now')
+              AND t.column_id NOT IN (
+                  SELECT id FROM board_columns WHERE workspace_id = ? AND name = 'Done'
+              )
+            ORDER BY t.due_date ASC
+            """,
+            (workspace_id, workspace_id),
+        )
+
+        # Completion rate (tasks in Done column)
+        completion_stats = _row(
+            conn,
+            """
+            SELECT
+                COUNT(*) as total_tasks,
+                SUM(CASE WHEN c.name = 'Done' THEN 1 ELSE 0 END) as completed_tasks
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.workspace_id = ?
+            """,
+            (workspace_id,),
+        )
+
+        # Tasks created over time (last 30 days)
+        tasks_over_time = _rows(
+            conn,
+            """
+            SELECT DATE(created_at) as date, COUNT(*) as count
+            FROM tasks
+            WHERE workspace_id = ?
+              AND created_at >= datetime('now', '-30 days')
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+            """,
+            (workspace_id,),
+        )
+
+        # Member activity (task counts)
+        member_activity = _rows(
+            conn,
+            """
+            SELECT
+                u.username,
+                u.email,
+                COUNT(DISTINCT t.id) as tasks_assigned,
+                COUNT(DISTINCT tc.id) as comments_made,
+                COUNT(DISTINCT ta.id) as files_uploaded
+            FROM workspace_members wm
+            JOIN users u ON wm.user_id = u.id
+            LEFT JOIN tasks t ON u.id = t.assignee_id AND t.workspace_id = ?
+            LEFT JOIN task_comments tc ON u.id = tc.user_id
+            LEFT JOIN task_attachments ta ON u.id = ta.user_id
+            WHERE wm.workspace_id = ?
+            GROUP BY u.id, u.username, u.email
+            ORDER BY tasks_assigned DESC
+            """,
+            (workspace_id, workspace_id),
+        )
+
+        total_tasks = completion_stats["total_tasks"] if completion_stats else 0
+        completed_tasks = completion_stats["completed_tasks"] if completion_stats else 0
+        completion_rate = (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
+
+        return {
+            "tasks_by_column": tasks_by_column,
+            "tasks_by_priority": tasks_by_priority,
+            "tasks_by_assignee": tasks_by_assignee,
+            "overdue_tasks": overdue_tasks,
+            "completion_rate": round(completion_rate, 2),
+            "total_tasks": total_tasks,
+            "completed_tasks": completed_tasks,
+            "tasks_over_time": tasks_over_time,
+            "member_activity": member_activity,
+        }
+
+
+def get_user_analytics(user_id: int) -> dict:
+    """Get analytics for a specific user across all their workspaces."""
+    with _get_conn() as conn:
+        # Tasks assigned to user
+        my_tasks = _rows(
+            conn,
+            """
+            SELECT t.*, w.name as workspace_name, c.name as column_name
+            FROM tasks t
+            JOIN workspaces w ON t.workspace_id = w.id
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ?
+            ORDER BY t.due_date ASC NULLS LAST
+            """,
+            (user_id,),
+        )
+
+        # Task counts by status
+        tasks_by_status = _rows(
+            conn,
+            """
+            SELECT c.name as column_name, COUNT(t.id) as count
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ?
+            GROUP BY c.name
+            """,
+            (user_id,),
+        )
+
+        # Overdue tasks
+        overdue_count = _row(
+            conn,
+            """
+            SELECT COUNT(*) as count
+            FROM tasks t
+            JOIN board_columns c ON t.column_id = c.id
+            WHERE t.assignee_id = ?
+              AND t.due_date < datetime('now')
+              AND c.name != 'Done'
+            """,
+            (user_id,),
+        )
+
+        # Tasks by workspace
+        tasks_by_workspace = _rows(
+            conn,
+            """
+            SELECT w.name as workspace_name, w.id as workspace_id, COUNT(t.id) as task_count
+            FROM tasks t
+            JOIN workspaces w ON t.workspace_id = w.id
+            WHERE t.assignee_id = ?
+            GROUP BY w.id, w.name
+            ORDER BY task_count DESC
+            """,
+            (user_id,),
+        )
+
+        # Activity stats
+        activity_stats = _row(
+            conn,
+            """
+            SELECT
+                COUNT(DISTINCT t.id) as tasks_created,
+                COUNT(DISTINCT tc.id) as comments_made,
+                COUNT(DISTINCT ta.id) as files_uploaded
+            FROM users u
+            LEFT JOIN tasks t ON u.id = t.reporter_id
+            LEFT JOIN task_comments tc ON u.id = tc.user_id
+            LEFT JOIN task_attachments ta ON u.id = ta.user_id
+            WHERE u.id = ?
+            """,
+            (user_id,),
+        )
+
+        return {
+            "my_tasks": my_tasks,
+            "tasks_by_status": tasks_by_status,
+            "overdue_count": overdue_count["count"] if overdue_count else 0,
+            "tasks_by_workspace": tasks_by_workspace,
+            "activity_stats": activity_stats or {},
+        }
+
+
+def get_global_analytics() -> dict:
+    """Get system-wide analytics (admin view)."""
+    with _get_conn() as conn:
+        # Total counts
+        totals = _row(
+            conn,
+            """
+            SELECT
+                (SELECT COUNT(*) FROM workspaces) as total_workspaces,
+                (SELECT COUNT(*) FROM users) as total_users,
+                (SELECT COUNT(*) FROM tasks) as total_tasks,
+                (SELECT COUNT(*) FROM tasks WHERE column_id IN (SELECT id FROM board_columns WHERE name = 'Done')) as completed_tasks
+            """,
+            (),
+        )
+
+        # Most active workspaces
+        active_workspaces = _rows(
+            conn,
+            """
+            SELECT w.id, w.name, COUNT(t.id) as task_count, COUNT(DISTINCT wm.user_id) as member_count
+            FROM workspaces w
+            LEFT JOIN tasks t ON w.id = t.workspace_id
+            LEFT JOIN workspace_members wm ON w.id = wm.workspace_id
+            GROUP BY w.id, w.name
+            ORDER BY task_count DESC
+            LIMIT 10
+            """,
+            (),
+        )
+
+        # Most active users
+        active_users = _rows(
+            conn,
+            """
+            SELECT u.username, u.email,
+                   COUNT(DISTINCT t.id) as tasks_assigned,
+                   COUNT(DISTINCT tc.id) as comments_made
+            FROM users u
+            LEFT JOIN tasks t ON u.id = t.assignee_id
+            LEFT JOIN task_comments tc ON u.id = tc.user_id
+            GROUP BY u.id, u.username, u.email
+            ORDER BY tasks_assigned DESC
+            LIMIT 10
+            """,
+            (),
+        )
+
+        # Tasks created over time (last 30 days)
+        tasks_trend = _rows(
+            conn,
+            """
+            SELECT DATE(created_at) as date, COUNT(*) as count
+            FROM tasks
+            WHERE created_at >= datetime('now', '-30 days')
+            GROUP BY DATE(created_at)
+            ORDER BY date ASC
+            """,
+            (),
+        )
+
+        return {
+            "totals": totals or {},
+            "active_workspaces": active_workspaces,
+            "active_users": active_users,
+            "tasks_trend": tasks_trend,
+        }

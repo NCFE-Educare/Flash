@@ -30,3 +30,6 @@ python-pptx>=0.6.0
 
 # === Mistral OCR (image-based PDF fallback) ===
 mistralai>=1.0.0
+
+# === Email Notifications ===
+sendgrid>=6.11.0
