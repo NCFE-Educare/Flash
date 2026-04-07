@@ -1,82 +1,42 @@
-# 📚 Kanban Board API Documentation - Frontend Guide
+# 📚 Kanban Board API - Complete Reference
 
-Complete API reference for building the frontend application.
+Detailed API specifications for all Kanban endpoints.
+
+> **🚀 Want to integrate quickly?** Check **`KANBAN_FRONTEND_GUIDE.md`** for copy-paste components and practical examples!
 
 ---
 
 ## 🔐 Authentication
 
-### Get Auth Token
+**Your existing auth system works for all Kanban endpoints!**
 
-All Kanban endpoints require authentication. First, get a JWT token:
+All Kanban endpoints use the **same JWT token** from your current login:
 
-**Signup:**
-```http
-POST /auth/signup
-Content-Type: application/json
-
-{
-  "email": "user@school.edu",
-  "username": "john_doe",
-  "password": "securepass123"
-}
-```
-
-**Response:**
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer"
-}
-```
-
-**Login:**
-```http
-POST /auth/login
-Content-Type: application/json
-
-{
-  "email": "user@school.edu",
-  "password": "securepass123"
-}
-```
-
-**Response:**
-```json
-{
-  "access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
-  "token_type": "bearer"
-}
-```
-
-### Using the Token
-
-Include the token in all subsequent requests:
-
-```http
-Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-**JavaScript Example:**
 ```javascript
+// Use your existing token from localStorage
 const token = localStorage.getItem('access_token');
 
-fetch('http://localhost:8000/workspaces', {
-  headers: {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json'
-  }
+// Include in all Kanban API calls
+fetch('/workspaces', {
+  headers: { 'Authorization': `Bearer ${token}` }
 })
 ```
 
 ---
 
-## 📋 Complete API Reference
+## 📋 API Base URL
 
-### Base URL
+**Development:**
 ```
 http://localhost:8000
 ```
+
+**Production:**
+```
+https://your-domain.com
+```
+
+All endpoints below are relative to this base URL.
 
 ---
 

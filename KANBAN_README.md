@@ -2,6 +2,17 @@
 
 A Jira/Trello-style project management system integrated into EduCare Bots.
 
+## 📚 Documentation Files
+
+| File | Purpose | For |
+|------|---------|-----|
+| **`KANBAN_FRONTEND_GUIDE.md`** | 🚀 Quick integration guide with copy-paste components | **Frontend developers** |
+| **`KANBAN_API_DOCS.md`** | 📖 Complete API reference with all endpoints | API reference lookup |
+| **`KANBAN_README.md`** | 📋 Backend overview (this file) | Backend developers |
+| **`SENDGRID_SETUP.md`** | 📧 Email notification setup | DevOps/Setup |
+
+**👉 Start here:** `KANBAN_FRONTEND_GUIDE.md`
+
 ---
 
 ## 🚀 Features
