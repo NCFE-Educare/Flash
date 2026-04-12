@@ -18,3 +18,18 @@ claude-agent-sdk==0.1.44
 google-api-python-client>=2.100.0
 google-auth-oauthlib>=1.2.0
 google-auth-httplib2>=0.2.0
+
+# === Background jobs (reminders) ===
+apscheduler>=3.10.0
+
+# === Document parsing (PDF, DOCX, PPTX) ===
+pypdf>=4.0.0
+python-docx>=1.0.0
+python-pptx>=0.6.0
+
+# === Mistral OCR (image-based PDF fallback) ===
+mistralai>=1.0.0
+
+# === Email Notifications ===
+sendgrid>=6.11.0
+openai>=1.0.0
