@@ -13,7 +13,7 @@ from pathlib import Path
 from queue import Empty, Queue
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, File, HTTPException, Query, UploadFile, status
+from fastapi import BackgroundTasks, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from fastapi.middleware.cors import CORSMiddleware
@@ -1287,6 +1287,19 @@ async def get_upload(filename: str):
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Image not found.")
     return FileResponse(file_path)
+
+
+class QuoteRequest(BaseModel):
+    topic: str | None = None
+    mood: str | None = None
+
+
+class QuoteResponse(BaseModel):
+    quote: str
+
+
+class LessonPlanResponse(BaseModel):
+    lesson_plan: str
 
 
 # ---------------------------------------------------------------------------
@@ -3130,3 +3143,69 @@ def get_dashboard_summary(current_user: dict = Depends(get_current_user)):
         "pending_invitations": pending_invitations,
         "upcoming_tasks": recent_tasks,
     }
+
+
+# ---------------------------------------------------------------------------
+# Quote Builder API
+# ---------------------------------------------------------------------------
+
+@app.post("/quote/generate", response_model=QuoteResponse, tags=["Tools"])
+async def generate_quote_endpoint(
+    body: QuoteRequest | None = None,
+    current_user: Annotated[dict, Depends(get_current_user)] = None,
+):
+    """
+    Generate an AI-powered two-liner quote.
+    User can provide optional 'topic' and 'mood'.
+    """
+    from quote_service import generate_quote
+    topic = body.topic if body else None
+    mood = body.mood if body else None
+    quote = await generate_quote(topic=topic, mood=mood)
+    return QuoteResponse(quote=quote)
+
+
+# ---------------------------------------------------------------------------
+# Lesson Planner API
+# ---------------------------------------------------------------------------
+
+@app.post("/lesson-plan/generate", response_model=LessonPlanResponse, tags=["Tools"])
+async def generate_lesson_plan_endpoint(
+    grade: str = Form(...),
+    topic: str = Form(...),
+    criteria: str = Form(...),
+    raw_text: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    current_user: Annotated[dict, Depends(get_current_user)] = None,
+):
+    """
+    Generate a high-quality lesson plan.
+    Inputs: grade, topic, criteria, and optional raw_text or file (PDF/DOCX).
+    """
+    from lesson_plan_service import generate_lesson_plan
+    from document_parser import extract_text_from_file
+
+    additional_context = raw_text or ""
+    
+    if file:
+        # Save temporary file to extract text
+        temp_path = UPLOADS_DIR / f"temp_lp_{uuid.uuid4().hex}_{file.filename}"
+        try:
+            content = await file.read()
+            with open(temp_path, "wb") as f:
+                f.write(content)
+            
+            # Extract text
+            extracted_text = extract_text_from_file(temp_path)
+            additional_context += f"\n\n[Extracted from uploaded file {file.filename}]:\n{extracted_text}"
+        finally:
+            if temp_path.exists():
+                os.remove(temp_path)
+
+    lesson_plan = await generate_lesson_plan(
+        grade=grade, 
+        topic=topic, 
+        criteria=criteria, 
+        additional_context=additional_context
+    )
+    return LessonPlanResponse(lesson_plan=lesson_plan)
